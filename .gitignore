@@ -1,0 +1,24 @@
+# ─── Python Backend ───────────────────────────────────────────
+backend/venv/
+backend/.venv/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/.pytest_cache/
+backend/**/.pytest_cache/
+
+# Secrets (NEVER commit)
+backend/.env
+
+# ─── Flutter App ───────────────────────────────────────────────
+apps/mobile_flutter/.dart_tool/
+apps/mobile_flutter/.flutter-plugins-dependencies
+apps/mobile_flutter/.pub-cache/
+apps/mobile_flutter/.pub/
+apps/mobile_flutter/build/
+apps/mobile_flutter/coverage/
+
+# ─── General ───────────────────────────────────────────────────
+.DS_Store
+*.log
+.idea/
+.vscode/

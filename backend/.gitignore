@@ -1,0 +1,31 @@
+# Python virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Pytest
+.pytest_cache/
+*.egg-info/
+
+# Environment secrets (NEVER commit these)
+.env
+.env.local
+.env.*.local
+
+# Distribution / packaging
+dist/
+build/
+*.egg
+
+# IDE
+.idea/
+.vscode/
+*.iml
