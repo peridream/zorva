@@ -4,7 +4,6 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../../core/config/user_session.dart';
 import '../../../../core/constants/supabase_constants.dart';
 import '../../../../core/theme/zorva_theme.dart';
-import '../../../onboarding/presentation/screens/sign_up_screen.dart';
 import '../../../onboarding/presentation/screens/welcome_screen.dart';
 
 class ProfileScreen extends StatefulWidget {

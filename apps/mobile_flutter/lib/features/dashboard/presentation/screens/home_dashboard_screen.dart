@@ -10,6 +10,7 @@ import '../../../rating/domain/glicko2.dart';
 import 'profile_screen.dart';
 import 'insights_screen.dart';
 import '../../../../core/constants/subscription_constants.dart';
+import '../../../../core/services/api_service.dart';
 
 class HomeDashboardScreen extends StatefulWidget {
   final String? userId;
@@ -214,15 +215,24 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
 
       // 5. Fetch Subscription Info from premium_subscriptions
       try {
-        final subRes = await supabase
-            .from('premium_subscriptions')
-            .select('plan_id, status')
-            .eq('user_id', userId)
-            .maybeSingle();
+        final serverSub = await ApiService.getSubscription(userId);
+        if (serverSub != null) {
+          _userPlanId = serverSub['plan_id'] ?? SubscriptionConstants.planCommunityTrial;
+          _userSubStatus = serverSub['status'] ?? SubscriptionConstants.statusActive;
+          if (serverSub['verified_matches_count'] != null) {
+            _totalVerifiedMatchesCount = (serverSub['verified_matches_count'] as num).toInt();
+          }
+        } else {
+          final subRes = await supabase
+              .from('premium_subscriptions')
+              .select('plan_id, status')
+              .eq('user_id', userId)
+              .maybeSingle();
 
-        if (subRes != null) {
-          _userPlanId = subRes['plan_id'] ?? SubscriptionConstants.planCommunityTrial;
-          _userSubStatus = subRes['status'] ?? SubscriptionConstants.statusActive;
+          if (subRes != null) {
+            _userPlanId = subRes['plan_id'] ?? SubscriptionConstants.planCommunityTrial;
+            _userSubStatus = subRes['status'] ?? SubscriptionConstants.statusActive;
+          }
         }
       } catch (sErr) {
         debugPrint('Subscription fetch note: $sErr');

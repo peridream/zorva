@@ -10,13 +10,11 @@ Then visit http://127.0.0.1:8000/docs for interactive API docs
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routes import matches, users, ratings
+from app.routes import matches, users, ratings, subscriptions, insights
 
 app = FastAPI(title="Zorva API", version="0.1.0")
 
-# Allow the Expo app (running on a different port) to call this API.
-# In production this list should be narrowed to your actual app's
-# domain(s) instead of allowing everything.
+# Allow mobile & web clients to call this API.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,6 +26,8 @@ app.add_middleware(
 app.include_router(matches.router)
 app.include_router(users.router)
 app.include_router(ratings.router)
+app.include_router(subscriptions.router)
+app.include_router(insights.router)
 
 
 

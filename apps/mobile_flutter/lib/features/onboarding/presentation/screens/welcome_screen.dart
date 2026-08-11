@@ -2,7 +2,6 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../../../../core/theme/zorva_theme.dart';
 import 'sign_in_screen.dart';
-import 'sign_up_screen.dart';
 
 class WelcomeScreen extends StatelessWidget {
   const WelcomeScreen({super.key});
@@ -216,7 +215,7 @@ class WelcomeScreen extends StatelessWidget {
                           onPressed: () {
                             Navigator.push(
                               context,
-                              MaterialPageRoute(builder: (_) => const SignUpScreen()),
+                              MaterialPageRoute(builder: (_) => const SignInScreen()),
                             );
                           },
                           style: ElevatedButton.styleFrom(
@@ -229,47 +228,19 @@ class WelcomeScreen extends StatelessWidget {
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: const [
                               Text(
-                                'Get Started',
+                                "LET'S JUMP IN 🚀",
                                 style: TextStyle(
                                   fontSize: 17,
                                   fontWeight: FontWeight.bold,
                                   color: ZorvaTheme.background,
-                                ),
-                              ),
-                              SizedBox(width: 8),
-                              Icon(Icons.arrow_forward, size: 20, color: ZorvaTheme.background),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      GestureDetector(
-                        onTap: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(builder: (_) => const SignInScreen()),
-                          );
-                        },
-                        child: const Text.rich(
-                          TextSpan(
-                            text: 'Already have an account? ',
-                            style: TextStyle(
-                              fontSize: 14,
-                              color: ZorvaTheme.textPrimary,
-                            ),
-                            children: [
-                              TextSpan(
-                                text: 'Sign In',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  decoration: TextDecoration.underline,
-                                  color: ZorvaTheme.primaryGold,
+                                  letterSpacing: 0.5,
                                 ),
                               ),
                             ],
                           ),
                         ),
                       ),
+                      const SizedBox(height: 16),
                       const SizedBox(height: 8),
                     ],
                   ),

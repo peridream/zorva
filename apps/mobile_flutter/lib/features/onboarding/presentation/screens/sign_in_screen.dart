@@ -5,7 +5,6 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../../core/theme/zorva_theme.dart';
 import '../../../dashboard/presentation/screens/home_dashboard_screen.dart';
 import 'city_onboarding_screen.dart';
-import 'sign_up_screen.dart';
 
 class SignInScreen extends StatefulWidget {
   const SignInScreen({super.key});
@@ -20,6 +19,8 @@ class _SignInScreenState extends State<SignInScreen> {
 
   bool _loading = false;
   bool _emailOtpSent = false;
+  String? _detectedUserName;
+  bool _isExistingUser = false;
   String? _errorMessage;
   Timer? _errorTimer;
 
@@ -61,14 +62,28 @@ class _SignInScreenState extends State<SignInScreen> {
     final supabase = Supabase.instance.client;
 
     try {
+      final profile = await supabase
+          .from('profiles')
+          .select('full_name')
+          .eq('email', email)
+          .maybeSingle();
+
+      if (profile != null && (profile['full_name'] as String? ?? '').trim().isNotEmpty) {
+        _isExistingUser = true;
+        _detectedUserName = (profile['full_name'] as String).trim().split(' ').first;
+      } else {
+        _isExistingUser = false;
+        _detectedUserName = null;
+      }
+
       await supabase.auth.signInWithOtp(
         email: email,
-        shouldCreateUser: false,
+        shouldCreateUser: true,
       );
       setState(() => _emailOtpSent = true);
     } catch (e) {
-      debugPrint('Email OTP note: $e');
-      await _proceedWithSmartRouting(email);
+      debugPrint('Email OTP error: $e');
+      _showThemeError('Could not send verification code. Please check your email.');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -87,13 +102,31 @@ class _SignInScreenState extends State<SignInScreen> {
     final supabase = Supabase.instance.client;
 
     try {
-      final res = await supabase.auth.verifyOTP(
-        email: email,
-        token: token,
-        type: OtpType.magiclink,
-      );
+      AuthResponse res;
+      try {
+        res = await supabase.auth.verifyOTP(
+          email: email,
+          token: token,
+          type: OtpType.email,
+        );
+      } catch (_) {
+        try {
+          res = await supabase.auth.verifyOTP(
+            email: email,
+            token: token,
+            type: OtpType.signup,
+          );
+        } catch (_) {
+          res = await supabase.auth.verifyOTP(
+            email: email,
+            token: token,
+            type: OtpType.magiclink,
+          );
+        }
+      }
       await _proceedWithSmartRouting(res.user?.email ?? email);
     } catch (e) {
+      debugPrint('Verify OTP error: $e');
       await _proceedWithSmartRouting(email);
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -267,9 +300,11 @@ class _SignInScreenState extends State<SignInScreen> {
                           borderRadius: BorderRadius.circular(20),
                           border: Border.all(color: ZorvaTheme.primaryGold, width: 1),
                         ),
-                        child: const Text(
-                          'WELCOME BACK',
-                          style: TextStyle(
+                        child: Text(
+                          _emailOtpSent
+                              ? (_isExistingUser ? 'PASSPORT VERIFICATION' : 'PASSPORT CREATION')
+                              : 'WELCOME TO ZORVA',
+                          style: const TextStyle(
                             fontSize: 11,
                             fontWeight: FontWeight.bold,
                             letterSpacing: 2,
@@ -281,20 +316,28 @@ class _SignInScreenState extends State<SignInScreen> {
                   ),
                   const SizedBox(height: 16),
 
-                  const Text(
-                    'Welcome Back to Zorva',
+                  Text(
+                    _emailOtpSent
+                        ? (_isExistingUser && _detectedUserName != null
+                            ? 'Welcome Back, $_detectedUserName! 👋'
+                            : (_isExistingUser ? 'Welcome Back! 👋' : 'Welcome to Zorva! 🚀'))
+                        : 'Welcome to Zorva ⚡',
                     textAlign: TextAlign.center,
-                    style: TextStyle(
+                    style: const TextStyle(
                       fontSize: 24,
                       fontWeight: FontWeight.bold,
                       color: ZorvaTheme.textPrimary,
                     ),
                   ),
                   const SizedBox(height: 8),
-                  const Text(
-                    'Sign in to access your lifelong sports passport, Glicko-2 ratings, and city leaderboards.',
+                  Text(
+                    _emailOtpSent
+                        ? (_isExistingUser
+                            ? 'Enter your 6-digit verification code to access your sports passport.'
+                            : 'Enter your 6-digit verification code to create your sports passport.')
+                        : 'Enter your email to claim or access your sports passport.',
                     textAlign: TextAlign.center,
-                    style: TextStyle(
+                    style: const TextStyle(
                       fontSize: 13,
                       color: ZorvaTheme.textSecondary,
                       height: 1.4,
@@ -349,7 +392,7 @@ class _SignInScreenState extends State<SignInScreen> {
                                           mainAxisAlignment: MainAxisAlignment.center,
                                           children: [
                                             Text(
-                                              'SIGN IN WITH EMAIL',
+                                              'CONTINUE WITH EMAIL',
                                               style: TextStyle(
                                                 fontWeight: FontWeight.bold,
                                                 fontSize: 14,
@@ -484,36 +527,7 @@ class _SignInScreenState extends State<SignInScreen> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 24),
-
-                  // Footer Navigation Link to Sign Up
-                  GestureDetector(
-                    onTap: () {
-                      Navigator.pushReplacement(
-                        context,
-                        MaterialPageRoute(builder: (_) => const SignUpScreen()),
-                      );
-                    },
-                    child: const Text.rich(
-                      TextSpan(
-                        text: 'New player? ',
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: ZorvaTheme.textPrimary,
-                        ),
-                        children: [
-                          TextSpan(
-                            text: 'Create Passport Account',
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              decoration: TextDecoration.underline,
-                              color: ZorvaTheme.primaryGold,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
+                  const SizedBox(height: 12),
 
                   // ERROR BANNER
                   if (_errorMessage != null) ...[

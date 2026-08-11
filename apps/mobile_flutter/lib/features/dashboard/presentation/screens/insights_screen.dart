@@ -3,6 +3,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../../core/theme/zorva_theme.dart';
 import '../../../../core/constants/supabase_constants.dart';
 
+import '../../../../core/services/api_service.dart';
+
 class InsightsScreen extends StatefulWidget {
   final String? userId;
 
@@ -38,8 +40,26 @@ class _InsightsScreenState extends State<InsightsScreen> {
 
   Future<void> _loadInsightsData() async {
     setState(() => _loading = true);
-    final supabase = Supabase.instance.client;
     final userId = _effectiveUserId;
+
+    // Try backend API server first
+    final serverData = await ApiService.getPlayerInsights(userId);
+    if (serverData != null) {
+      if (mounted) {
+        setState(() {
+          _currentRating = (serverData['current_rating'] as num? ?? 1500).round();
+          _peakRating = (serverData['peak_rating'] as num? ?? 1500).round();
+          _winStreak = (serverData['win_streak'] as num? ?? 0).toInt();
+          _bestWinStreak = (serverData['best_win_streak'] as num? ?? 0).toInt();
+          _formGuide = List<String>.from(serverData['form_guide'] ?? []);
+          _ratingHistoryPoints = List<double>.from((serverData['trajectory_points'] as List? ?? []).map((e) => (e as num).toDouble()));
+          _loading = false;
+        });
+      }
+      return;
+    }
+
+    final supabase = Supabase.instance.client;
 
     try {
       // 1. Fetch Ratings for peak & current
@@ -62,10 +82,7 @@ class _InsightsScreenState extends State<InsightsScreen> {
 
         final num ratingNum = chosenCard['rating'] as num? ?? 1500;
         _currentRating = ratingNum.round();
-
-        final List<int> rVals =
-            rList.map((r) => (r['rating'] as num).round()).toList();
-        _peakRating = rVals.reduce((a, b) => a > b ? a : b);
+        _peakRating = _currentRating;
         activeContextId = chosenCard['context_id'] as String?;
       }
 
@@ -205,6 +222,7 @@ class _InsightsScreenState extends State<InsightsScreen> {
       }
 
       _ratingHistoryPoints = points;
+      _peakRating = _ratingHistoryPoints.reduce((a, b) => a > b ? a : b).round();
 
     } catch (e) {
       debugPrint('Error loading insights: $e');

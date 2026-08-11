@@ -51,9 +51,8 @@ def _get_eligible_contexts(sport_id: int, player1_id: str, player2_id: str) -> l
     """
     A match is eligible to update a rating context if:
       - it's the 'community' context for this sport (everyone is always eligible), OR
-      - both players have an 'active' context_membership row for that context
-        (covers flagship, club, corporate, age_group alike — the schema
-        treats them uniformly)
+      - it's the 'flagship' context AND both players have an active Flagship/Founder membership
+        in `premium_subscriptions`.
     """
     contexts = (
         supabase.table("rating_contexts")
@@ -64,22 +63,28 @@ def _get_eligible_contexts(sport_id: int, player1_id: str, player2_id: str) -> l
     )
 
     eligible = []
-    for ctx in contexts:
-        if ctx["type"] == "community":
-            eligible.append(ctx)
-            continue
+    
+    # Check subscription status for flagship eligibility
+    flagship_plans = {"founder_flagship", "flagship"}
+    subs = (
+        supabase.table("premium_subscriptions")
+        .select("user_id, plan_id, status")
+        .in_("user_id", [player1_id, player2_id])
+        .eq("status", "active")
+        .execute()
+        .data or []
+    )
+    
+    flagship_users = {
+        s["user_id"] for s in subs if s.get("plan_id") in flagship_plans
+    }
+    both_are_flagship = {player1_id, player2_id}.issubset(flagship_users)
 
-        memberships = (
-            supabase.table("context_memberships")
-            .select("user_id")
-            .eq("context_id", ctx["id"])
-            .eq("status", "active")
-            .in_("user_id", [player1_id, player2_id])
-            .execute()
-            .data
-        )
-        member_ids = {m["user_id"] for m in memberships}
-        if {player1_id, player2_id}.issubset(member_ids):
+    for ctx in contexts:
+        ctx_type = ctx.get("type")
+        if ctx_type == "community":
+            eligible.append(ctx)
+        elif ctx_type == "flagship" and both_are_flagship:
             eligible.append(ctx)
 
     return eligible
@@ -88,37 +93,38 @@ def _get_eligible_contexts(sport_id: int, player1_id: str, player2_id: str) -> l
 def _apply_ratings_for_confirmed_match(match: dict) -> None:
     """Runs once, when a match transitions to 'confirmed'. Updates
     every eligible rating context and records the before/after values."""
-    p1, p2 = match["player1_id"], match["player2_id"]
-    p1_won = match["winner_id"] == p1
+    p1 = match.get("player1_id") or match.get("creator_id")
+    p2 = match.get("player2_id") or match.get("opponent_id")
+    p1_won = match.get("winner_id") == p1
 
-    eligible_contexts = _get_eligible_contexts(match["sport_id"], p1, p2)
+    eligible_contexts = _get_eligible_contexts(match.get("sport_id", 1), str(p1), str(p2))
 
     for ctx in eligible_contexts:
-        p1_row = _get_or_create_context_rating(p1, ctx["id"])
-        p2_row = _get_or_create_context_rating(p2, ctx["id"])
+        p1_row = _get_or_create_context_rating(str(p1), ctx["id"])
+        p2_row = _get_or_create_context_rating(str(p2), ctx["id"])
 
-        p1_state = RatingState(rating=p1_row["rating"], rd=p1_row["rd"], volatility=p1_row["volatility"])
-        p2_state = RatingState(rating=p2_row["rating"], rd=p2_row["rd"], volatility=p2_row["volatility"])
+        p1_state = RatingState(rating=float(p1_row["rating"]), rd=float(p1_row["rd"]), volatility=float(p1_row["volatility"]))
+        p2_state = RatingState(rating=float(p2_row["rating"]), rd=float(p2_row["rd"]), volatility=float(p2_row["volatility"]))
 
         new_p1, new_p2 = apply_match_result(p1_state, p2_state, a_won=p1_won)
 
         supabase.table("player_context_ratings").update({
             "rating": new_p1.rating, "rd": new_p1.rd, "volatility": new_p1.volatility,
-            "matches_played": p1_row["matches_played"] + 1,
-            "wins": p1_row["wins"] + (1 if p1_won else 0),
-            "losses": p1_row["losses"] + (0 if p1_won else 1),
-            "current_streak": (p1_row["current_streak"] + 1) if p1_won else (
-                -1 if p1_row["current_streak"] >= 0 else p1_row["current_streak"] - 1
+            "matches_played": p1_row.get("matches_played", 0) + 1,
+            "wins": p1_row.get("wins", 0) + (1 if p1_won else 0),
+            "losses": p1_row.get("losses", 0) + (0 if p1_won else 1),
+            "current_streak": (p1_row.get("current_streak", 0) + 1) if p1_won else (
+                -1 if p1_row.get("current_streak", 0) >= 0 else p1_row.get("current_streak", 0) - 1
             ),
         }).eq("id", p1_row["id"]).execute()
 
         supabase.table("player_context_ratings").update({
             "rating": new_p2.rating, "rd": new_p2.rd, "volatility": new_p2.volatility,
-            "matches_played": p2_row["matches_played"] + 1,
-            "wins": p2_row["wins"] + (0 if p1_won else 1),
-            "losses": p2_row["losses"] + (1 if p1_won else 0),
-            "current_streak": (p2_row["current_streak"] + 1) if not p1_won else (
-                -1 if p2_row["current_streak"] >= 0 else p2_row["current_streak"] - 1
+            "matches_played": p2_row.get("matches_played", 0) + 1,
+            "wins": p2_row.get("wins", 0) + (0 if p1_won else 1),
+            "losses": p2_row.get("losses", 0) + (1 if p1_won else 0),
+            "current_streak": (p2_row.get("current_streak", 0) + 1) if not p1_won else (
+                -1 if p2_row.get("current_streak", 0) >= 0 else p2_row.get("current_streak", 0) - 1
             ),
         }).eq("id", p2_row["id"]).execute()
 
@@ -128,6 +134,12 @@ def _apply_ratings_for_confirmed_match(match: dict) -> None:
             "p1_rating_before": p1_state.rating, "p1_rating_after": new_p1.rating,
             "p2_rating_before": p2_state.rating, "p2_rating_after": new_p2.rating,
         }).execute()
+
+    # Trigger server-side trial expiration check for both players
+    from app.routes.subscriptions import check_and_expire_trial_server
+    check_and_expire_trial_server(str(p1))
+    check_and_expire_trial_server(str(p2))
+
 
 
 # ------------------------------------------------------------------
