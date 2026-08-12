@@ -307,7 +307,23 @@ class _AddMatchScreenState extends State<AddMatchScreen> {
     final opponentScore = opponentWonSets;
 
     try {
-      final matchRes = await supabase.from('matches').insert({
+      // Auto-detect shared group between p1 and p2
+      String? matchedGroupId;
+      try {
+        final p1Groups = await supabase.from('group_members').select('group_id').eq('user_id', p1);
+        final p2Groups = await supabase.from('group_members').select('group_id').eq('user_id', p2);
+
+        final p1Gids = (p1Groups as List).map((g) => g['group_id'] as String).toSet();
+        final p2Gids = (p2Groups as List).map((g) => g['group_id'] as String).toSet();
+        final common = p1Gids.intersection(p2Gids);
+        if (common.isNotEmpty) {
+          matchedGroupId = common.first;
+        }
+      } catch (gErr) {
+        debugPrint('Group detection note: $gErr');
+      }
+
+      final Map<String, dynamic> matchPayload = {
         'creator_id': p1,
         'opponent_id': p2,
         'sport': 'table_tennis',
@@ -316,7 +332,12 @@ class _AddMatchScreenState extends State<AddMatchScreen> {
         'winner_id': winner,
         'status': 'pending',
         'logged_at': DateTime.now().toIso8601String(),
-      }).select().single();
+      };
+      if (matchedGroupId != null) {
+        matchPayload['group_id'] = matchedGroupId;
+      }
+
+      await supabase.from('matches').insert(matchPayload);
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

@@ -18,12 +18,14 @@ class HomeDashboardScreen extends StatefulWidget {
   final String? userId;
   final String? displayName;
   final String? city;
+  final int initialTabIndex;
 
   const HomeDashboardScreen({
     super.key,
     this.userId,
     this.displayName,
     this.city,
+    this.initialTabIndex = 0,
   });
 
   @override
@@ -31,7 +33,7 @@ class HomeDashboardScreen extends StatefulWidget {
 }
 
 class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
-  int _currentIndex = 0;
+  late int _currentIndex;
   bool _loading = true;
 
   String _userPlanId = SubscriptionConstants.planCommunityTrial;
@@ -59,6 +61,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
   @override
   void initState() {
     super.initState();
+    _currentIndex = widget.initialTabIndex;
     _ratingPageController = PageController();
     _loadDashboardData();
     _subscribeToRealtimeUpdates();
@@ -139,13 +142,13 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
         return 0;
       });
 
-      // 3. Recent Verified Matches (Enriched with Opponent Name & City)
+      // 3. Recent Matches (Enriched with Opponent Name & City)
       try {
         final matchesRes = await supabase
             .from('matches')
             .select('*')
             .or('creator_id.eq.$userId,opponent_id.eq.$userId')
-            .eq('status', 'verified')
+            .eq('status', 'confirmed')
             .order('logged_at', ascending: false)
             .limit(10);
 
@@ -153,8 +156,8 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
         for (var m in matchesRes) {
           final isCreator = m['creator_id'] == userId;
           final opponentId = isCreator ? m['opponent_id'] : m['creator_id'];
-
           final matchId = m['id'];
+
           final opponentProfile = await supabase
               .from('profiles')
               .select('full_name, username, city')
@@ -197,13 +200,13 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
         }
         _recentMatches = enrichedMatches;
 
-        // Fetch uncapped total verified matches count for trial tracking
-        final allVerifiedRes = await supabase
+        // Fetch total confirmed matches count for trial tracking
+        final allRes = await supabase
             .from('matches')
             .select('id')
             .or('creator_id.eq.$userId,opponent_id.eq.$userId')
-            .eq('status', 'verified');
-        _totalVerifiedMatchesCount = allVerifiedRes.length;
+            .eq('status', 'confirmed');
+        _totalVerifiedMatchesCount = (allRes as List).length;
       } catch (mErr) {
         debugPrint('Recent matches fetch note: $mErr');
       }
@@ -511,9 +514,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
         final String winnerId = matchRes['winner_id'] ?? creatorId;
         final bool creatorWon = winnerId == creatorId;
 
-        // 3. Mark match as verified
+        // 3. Mark match as confirmed
         await supabase.from('matches').update({
-          'status': 'verified',
+          'status': 'confirmed',
         }).eq('id', matchId);
 
         // 4. Multi-Context Glicko-2 Update: Fetch all rating contexts shared by both players

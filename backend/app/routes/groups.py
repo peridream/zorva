@@ -345,7 +345,7 @@ def get_group_insights(group_id: str, user_id: str):
             supabase.table("matches")
             .select("id, creator_id, opponent_id, winner_id, status, logged_at")
             .eq("group_id", group_id)
-            .eq("status", "verified")
+            .eq("status", "confirmed")
             .execute()
         )
         group_matches = matches_res.data or []

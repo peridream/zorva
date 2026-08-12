@@ -42,7 +42,7 @@ CREATE TABLE public.matches (
   creator_score INTEGER NOT NULL,
   opponent_score INTEGER NOT NULL,
   winner_id UUID REFERENCES public.profiles(id),
-  status TEXT CHECK (status IN ('pending', 'verified', 'disputed')) DEFAULT 'pending',
+  status TEXT CHECK (status IN ('pending', 'pending_confirmation', 'confirmed', 'verified', 'disputed')) DEFAULT 'pending',
   rating_change_creator DOUBLE PRECISION DEFAULT 0.0,
   rating_change_opponent DOUBLE PRECISION DEFAULT 0.0,
   logged_at TIMESTAMPTZ DEFAULT NOW()

@@ -91,7 +91,7 @@ class _InsightsScreenState extends State<InsightsScreen> {
           .from('matches')
           .select('*')
           .or('creator_id.eq.$userId,opponent_id.eq.$userId')
-          .eq('status', 'verified')
+          .eq('status', 'confirmed')
           .order('logged_at', ascending: false);
 
       final matches = List<Map<String, dynamic>>.from(matchesRes);
