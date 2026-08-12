@@ -151,11 +151,37 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
           final isCreator = m['creator_id'] == userId;
           final opponentId = isCreator ? m['opponent_id'] : m['creator_id'];
 
+          final matchId = m['id'];
           final opponentProfile = await supabase
               .from('profiles')
               .select('full_name, username, city')
               .eq('id', opponentId)
               .maybeSingle();
+
+          bool isOfficial = false;
+          try {
+            final linkRes = await supabase
+                .from('match_context_links')
+                .select('context_id, rating_contexts(type)')
+                .eq('match_id', matchId);
+
+            if (linkRes != null && (linkRes as List).isNotEmpty) {
+              for (var link in linkRes) {
+                final ctx = link['rating_contexts'];
+                if (ctx != null) {
+                  final type = ctx is Map
+                      ? ctx['type']
+                      : (ctx is List && (ctx as List).isNotEmpty ? ctx[0]['type'] : null);
+                  if (type == 'flagship') {
+                    isOfficial = true;
+                    break;
+                  }
+                }
+              }
+            }
+          } catch (lErr) {
+            debugPrint('match_context_links lookup note: $lErr');
+          }
 
           final map = Map<String, dynamic>.from(m);
           final rawOppName = opponentProfile?['full_name'] ?? opponentProfile?['username'];
@@ -163,6 +189,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
               ? rawOppName.toString().trim()
               : 'Player';
           map['opponent_city'] = opponentProfile?['city'] ?? '';
+          map['is_official'] = isOfficial;
           enrichedMatches.add(map);
         }
         _recentMatches = enrichedMatches;
@@ -735,19 +762,18 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
     final List<Widget> pages = [
       _buildHomeContent(),
       const LeaderboardsScreen(),
-      ProfileScreen(userId: _effectiveUserId),
     ];
 
     return Scaffold(
       backgroundColor: ZorvaTheme.background,
-      body: pages[_currentIndex],
+      body: pages[_currentIndex % pages.length],
       bottomNavigationBar: Container(
         decoration: const BoxDecoration(
           color: Color(0xFF14171A),
           border: Border(top: BorderSide(color: ZorvaTheme.borderSubtle, width: 1)),
         ),
         child: BottomNavigationBar(
-          currentIndex: _currentIndex,
+          currentIndex: _currentIndex % pages.length,
           backgroundColor: Colors.transparent,
           elevation: 0,
           selectedItemColor: ZorvaTheme.primaryGold,
@@ -765,11 +791,6 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
               icon: Icon(Icons.emoji_events_outlined),
               activeIcon: Icon(Icons.emoji_events, color: ZorvaTheme.primaryGold),
               label: 'Leaderboard',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.person_outline_rounded),
-              activeIcon: Icon(Icons.person_rounded, color: ZorvaTheme.primaryGold),
-              label: 'Profile',
             ),
           ],
         ),
@@ -862,37 +883,54 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
                   ),
                   Row(
                     children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: const Color(0x331C2024),
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: ZorvaTheme.borderSubtle),
-                        ),
-                        child: Row(
-                          children: [
-                            CircleAvatar(
-                              radius: 12,
-                              backgroundColor: ZorvaTheme.primaryGold,
-                              child: Text(
-                                name.isNotEmpty ? name[0].toUpperCase() : 'P',
-                                style: const TextStyle(
-                                  color: ZorvaTheme.background,
-                                  fontWeight: FontWeight.w900,
-                                  fontSize: 12,
+                      InkWell(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => ProfileScreen(userId: _effectiveUserId),
+                            ),
+                          );
+                        },
+                        borderRadius: BorderRadius.circular(20),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: const Color(0x331C2024),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: ZorvaTheme.borderSubtle),
+                          ),
+                          child: Row(
+                            children: [
+                              CircleAvatar(
+                                radius: 12,
+                                backgroundColor: ZorvaTheme.primaryGold,
+                                child: Text(
+                                  name.isNotEmpty ? name[0].toUpperCase() : 'P',
+                                  style: const TextStyle(
+                                    color: ZorvaTheme.background,
+                                    fontWeight: FontWeight.w900,
+                                    fontSize: 12,
+                                  ),
                                 ),
                               ),
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              name,
-                              style: const TextStyle(
-                                color: ZorvaTheme.textPrimary,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 13,
+                              const SizedBox(width: 8),
+                              Text(
+                                name,
+                                style: const TextStyle(
+                                  color: ZorvaTheme.textPrimary,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 13,
+                                ),
                               ),
-                            ),
-                          ],
+                              const SizedBox(width: 4),
+                              const Icon(
+                                Icons.chevron_right_rounded,
+                                size: 16,
+                                color: ZorvaTheme.textMuted,
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -1289,7 +1327,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
                   )
                 else
                   SizedBox(
-                    height: 320,
+                    height: 215,
                     child: ListView(
                       physics: const BouncingScrollPhysics(),
                       children: _recentMatches.map((m) {
@@ -1298,6 +1336,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
                         final isWin = m['winner_id'] == userId;
                         final oppName = m['opponent_name'] ?? 'Opponent';
                         final oppCity = m['opponent_city'] ?? '';
+                        final isOfficial = m['is_official'] == true ||
+                            m['match_type'] == 'flagship' ||
+                            m['context_type'] == 'flagship';
 
                         final cScore = m['creator_score'] ?? 0;
                         final oScore = m['opponent_score'] ?? 0;
@@ -1305,8 +1346,8 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
                         final oppScore = isCreator ? oScore : cScore;
 
                         return Container(
-                          margin: const EdgeInsets.only(bottom: 12),
-                          padding: const EdgeInsets.all(16),
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                           decoration: BoxDecoration(
                             color: const Color(0xFF14171A),
                             borderRadius: BorderRadius.circular(16),
@@ -1350,7 +1391,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
                                           ),
                                         ),
                                         if (oppCity.isNotEmpty) ...[
-                                          const SizedBox(width: 6),
+                                          const SizedBox(width: 4),
                                           Text(
                                             '($oppCity)',
                                             style: const TextStyle(
@@ -1359,6 +1400,29 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
                                             ),
                                           ),
                                         ],
+                                        const SizedBox(width: 8),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: isOfficial
+                                                ? ZorvaTheme.primaryGold.withOpacity(0.15)
+                                                : Colors.tealAccent.withOpacity(0.15),
+                                            borderRadius: BorderRadius.circular(10),
+                                            border: Border.all(
+                                              color: isOfficial ? ZorvaTheme.primaryGold : Colors.tealAccent,
+                                              width: 0.8,
+                                            ),
+                                          ),
+                                          child: Text(
+                                            isOfficial ? 'OFFICIAL ⚡' : 'COMMUNITY 🎾',
+                                            style: TextStyle(
+                                              color: isOfficial ? ZorvaTheme.primaryGold : Colors.tealAccent,
+                                              fontSize: 9,
+                                              fontWeight: FontWeight.w900,
+                                              letterSpacing: 0.5,
+                                            ),
+                                          ),
+                                        ),
                                       ],
                                     ),
                                     const SizedBox(height: 3),
@@ -1399,7 +1463,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
                   )
                 else
                   SizedBox(
-                    height: 320,
+                    height: 215,
                     child: ListView(
                       physics: const BouncingScrollPhysics(),
                       children: _pendingMatches.map((m) {

@@ -321,11 +321,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        const Text('MY PROFILE',
-                            style: TextStyle(
-                              fontSize: 13, fontWeight: FontWeight.w900,
-                              letterSpacing: 3, color: ZorvaTheme.primaryGold,
-                            )),
+                        Row(
+                          children: [
+                            if (Navigator.canPop(context)) ...[
+                              IconButton(
+                                icon: const Icon(Icons.arrow_back_ios_new_rounded, color: ZorvaTheme.textPrimary, size: 20),
+                                tooltip: 'Back to Passport',
+                                onPressed: () => Navigator.pop(context),
+                              ),
+                              const SizedBox(width: 4),
+                            ],
+                            const Text(
+                              'MY PROFILE',
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w900,
+                                letterSpacing: 3,
+                                color: ZorvaTheme.primaryGold,
+                              ),
+                            ),
+                          ],
+                        ),
                         Row(
                           children: [
                             IconButton(
