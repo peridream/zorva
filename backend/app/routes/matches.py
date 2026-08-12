@@ -150,20 +150,41 @@ def _apply_ratings_for_confirmed_match(match: dict) -> None:
 def record_match(body: RecordMatchRequest):
     """Submit a new match result. Stays 'pending_confirmation' until
     the opponent confirms (the recorder's submission counts as their
-    own implicit confirmation)."""
+    own implicit confirmation).
+    
+    If both players belong to a common group, the match is automatically
+    tagged with that group_id for group analytics.
+    """
     if body.winner_id not in (body.player1_id, body.player2_id):
         raise HTTPException(400, "winner_id must be one of the two players")
     if body.player1_id == body.player2_id:
         raise HTTPException(400, "A player cannot play against themself")
 
-    match = supabase.table("matches").insert({
+    # Detect shared group between player1 and player2
+    matched_group_id = None
+    try:
+        p1_res = supabase.table("group_members").select("group_id").eq("user_id", str(body.player1_id)).execute()
+        p2_res = supabase.table("group_members").select("group_id").eq("user_id", str(body.player2_id)).execute()
+        p1_gids = {r["group_id"] for r in (p1_res.data or [])}
+        p2_gids = {r["group_id"] for r in (p2_res.data or [])}
+        common = p1_gids.intersection(p2_gids)
+        if common:
+            matched_group_id = list(common)[0]
+    except Exception as e:
+        print(f"Group detection note: {e}")
+
+    match_payload = {
         "sport_id": body.sport_id,
         "player1_id": str(body.player1_id),
         "player2_id": str(body.player2_id),
         "winner_id": str(body.winner_id),
         "score_json": body.score_json,
         "recorded_by": str(body.recorded_by),
-    }).execute().data[0]
+    }
+    if matched_group_id:
+        match_payload["group_id"] = matched_group_id
+
+    match = supabase.table("matches").insert(match_payload).execute().data[0]
 
     # the recorder's submission counts as their confirmation
     supabase.table("match_confirmations").insert({

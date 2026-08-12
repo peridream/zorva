@@ -5,7 +5,7 @@ Rating endpoints — leaderboard retrieval, context listing, and user rating car
 from fastapi import APIRouter, HTTPException
 from app.db import supabase
 
-router = APIRouter(tags=["ratings"])
+router = APIRouter(prefix="/ratings", tags=["ratings"])
 
 
 @router.get("/contexts")
@@ -15,7 +15,8 @@ def list_contexts():
     return res.data
 
 
-@router.get("/ratings/{user_id}")
+@router.get("/user/{user_id}")
+@router.get("/{user_id}")
 def get_user_ratings(user_id: str):
     """Fetch all context ratings for a specific player."""
     res = (

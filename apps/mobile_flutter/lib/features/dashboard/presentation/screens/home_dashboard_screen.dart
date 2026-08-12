@@ -11,6 +11,8 @@ import 'profile_screen.dart';
 import 'insights_screen.dart';
 import '../../../../core/constants/subscription_constants.dart';
 import '../../../../core/services/api_service.dart';
+import '../../../groups/presentation/screens/group_detail_screen.dart';
+import '../../../groups/presentation/screens/groups_list_screen.dart';
 
 class HomeDashboardScreen extends StatefulWidget {
   final String? userId;
@@ -44,6 +46,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
   int _recentMatchesSubTabIndex = 0; // 0 = Verified, 1 = Pending
   List<double> _ratingHistoryPoints = [];
   int _totalVerifiedMatchesCount = 0;
+  List<Map<String, dynamic>> _userGroups = [];
 
   String get _effectiveUserId =>
       widget.userId ??
@@ -263,6 +266,13 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
         }
       } catch (sErr) {
         debugPrint('Subscription fetch note: $sErr');
+      }
+
+      // 6. Fetch User Groups
+      try {
+        _userGroups = await ApiService.getUserGroups(userId);
+      } catch (gErr) {
+        debugPrint('User groups fetch note: $gErr');
       }
     } catch (e) {
       debugPrint('Error loading dashboard: $e');
@@ -745,10 +755,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
                     color: ZorvaTheme.textPrimary,
                     fontSize: 14),
               ),
-              SizedBox(height: 4),
               Text(
                 'Ratings update after both players confirm the match result, ensuring 100% fair and trusted rankings.',
-                style: TextStyle(color: ZorvaTheme.textSecondary, fontSize: 13),
+                style: const TextStyle(color: ZorvaTheme.textSecondary, fontSize: 13),
               ),
             ],
           ),
@@ -757,11 +766,276 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
     );
   }
 
+  void _showCreateGroupModal(BuildContext context) {
+    final nameCtrl = TextEditingController();
+    final descCtrl = TextEditingController();
+    final cityCtrl = TextEditingController(text: widget.city ?? 'Dallas');
+    bool isSubmitting = false;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModalState) => Container(
+          padding: EdgeInsets.only(
+            left: 24,
+            right: 24,
+            top: 24,
+            bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
+          ),
+          decoration: const BoxDecoration(
+            color: Color(0xFF14171A),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+            border: Border(top: BorderSide(color: ZorvaTheme.primaryGold, width: 1.5)),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: ZorvaTheme.borderSubtle,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 18),
+              const Text(
+                'CREATE COMMUNITY GROUP 👥',
+                style: TextStyle(
+                  color: ZorvaTheme.primaryGold,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 1.5,
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Create a private group for your friends or club (Max 20 Members).',
+                style: TextStyle(color: ZorvaTheme.textMuted, fontSize: 12),
+              ),
+              const SizedBox(height: 18),
+              TextField(
+                controller: nameCtrl,
+                style: const TextStyle(color: ZorvaTheme.textPrimary, fontWeight: FontWeight.bold),
+                decoration: const InputDecoration(
+                  labelText: 'Group Name',
+                  prefixIcon: Icon(Icons.people_alt_rounded, color: ZorvaTheme.primaryGold),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: cityCtrl,
+                style: const TextStyle(color: ZorvaTheme.textPrimary, fontWeight: FontWeight.bold),
+                decoration: const InputDecoration(
+                  labelText: 'City',
+                  prefixIcon: Icon(Icons.location_city_rounded, color: ZorvaTheme.primaryGold),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: descCtrl,
+                style: const TextStyle(color: ZorvaTheme.textPrimary),
+                decoration: const InputDecoration(
+                  labelText: 'Description (Optional)',
+                  prefixIcon: Icon(Icons.notes_rounded, color: ZorvaTheme.textMuted),
+                ),
+              ),
+              const SizedBox(height: 24),
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: ZorvaTheme.primaryGold,
+                    foregroundColor: ZorvaTheme.background,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  ),
+                  onPressed: isSubmitting
+                      ? null
+                      : () async {
+                          final name = nameCtrl.text.trim();
+                          if (name.isEmpty) return;
+                          setModalState(() => isSubmitting = true);
+
+                          final res = await ApiService.createGroup(
+                            name: name,
+                            description: descCtrl.text.trim(),
+                            city: cityCtrl.text.trim(),
+                            creatorId: _effectiveUserId,
+                          );
+
+                          if (mounted) {
+                            Navigator.pop(ctx);
+                            if (res != null && res['error'] == null) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Community Group created successfully! 🎉'),
+                                  backgroundColor: ZorvaTheme.primaryGold,
+                                ),
+                              );
+                              _loadDashboardData();
+                            } else {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(res?['error'] ?? 'Failed to create group'),
+                                  backgroundColor: Colors.redAccent,
+                                ),
+                              );
+                            }
+                          }
+                        },
+                  child: isSubmitting
+                      ? const CircularProgressIndicator(color: ZorvaTheme.background)
+                      : const Text(
+                          'CREATE GROUP 🚀',
+                          style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 1),
+                        ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showJoinGroupModal(BuildContext context) {
+    final codeCtrl = TextEditingController();
+    bool isSubmitting = false;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModalState) => Container(
+          padding: EdgeInsets.only(
+            left: 24,
+            right: 24,
+            top: 24,
+            bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
+          ),
+          decoration: const BoxDecoration(
+            color: Color(0xFF14171A),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+            border: Border(top: BorderSide(color: ZorvaTheme.primaryGold, width: 1.5)),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: ZorvaTheme.borderSubtle,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 18),
+              const Text(
+                'JOIN GROUP WITH INVITE CODE 🔑',
+                style: TextStyle(
+                  color: ZorvaTheme.primaryGold,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 1.5,
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Enter the 6-character group invite code to join.',
+                style: TextStyle(color: ZorvaTheme.textMuted, fontSize: 12),
+              ),
+              const SizedBox(height: 18),
+              TextField(
+                controller: codeCtrl,
+                textCapitalization: TextCapitalization.characters,
+                style: const TextStyle(
+                  color: ZorvaTheme.textPrimary,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 2,
+                ),
+                decoration: const InputDecoration(
+                  labelText: 'Invite Code (e.g. ZORVA8)',
+                  prefixIcon: Icon(Icons.key_rounded, color: ZorvaTheme.primaryGold),
+                ),
+              ),
+              const SizedBox(height: 24),
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: ZorvaTheme.primaryGold,
+                    foregroundColor: ZorvaTheme.background,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  ),
+                  onPressed: isSubmitting
+                      ? null
+                      : () async {
+                          final code = codeCtrl.text.trim();
+                          if (code.isEmpty) return;
+                          setModalState(() => isSubmitting = true);
+
+                          final res = await ApiService.joinGroup(
+                            userId: _effectiveUserId,
+                            inviteCode: code,
+                          );
+
+                          if (mounted) {
+                            Navigator.pop(ctx);
+                            if (res != null && res['error'] == null) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(res['status'] == 'already_member'
+                                      ? 'You are already a member of this group!'
+                                      : 'Joined group successfully! 🎉'),
+                                  backgroundColor: ZorvaTheme.primaryGold,
+                                ),
+                              );
+                              _loadDashboardData();
+                            } else {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(res?['error'] ?? 'Failed to join group'),
+                                  backgroundColor: Colors.redAccent,
+                                ),
+                              );
+                            }
+                          }
+                        },
+                  child: isSubmitting
+                      ? const CircularProgressIndicator(color: ZorvaTheme.background)
+                      : const Text(
+                          'JOIN GROUP ⚡',
+                          style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 1),
+                        ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final List<Widget> pages = [
       _buildHomeContent(),
       const LeaderboardsScreen(),
+      GroupsListScreen(
+        userId: _effectiveUserId,
+        userCity: widget.city,
+      ),
     ];
 
     return Scaffold(
@@ -791,6 +1065,11 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
               icon: Icon(Icons.emoji_events_outlined),
               activeIcon: Icon(Icons.emoji_events, color: ZorvaTheme.primaryGold),
               label: 'Leaderboard',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.groups_outlined),
+              activeIcon: Icon(Icons.groups, color: ZorvaTheme.primaryGold),
+              label: 'Groups',
             ),
           ],
         ),
@@ -1633,6 +1912,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
                     ),
                   ),
               ],
+              const SizedBox(height: 80),
             ],
           ),
         ),
