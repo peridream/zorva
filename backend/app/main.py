@@ -10,7 +10,7 @@ Then visit http://127.0.0.1:8000/docs for interactive API docs
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routes import matches, users, ratings, subscriptions, insights, groups
+from app.routes import matches, users, ratings, subscriptions, insights, groups, settings
 
 app = FastAPI(title="Zorva API", version="0.1.0")
 
@@ -29,6 +29,7 @@ app.include_router(ratings.router)
 app.include_router(subscriptions.router)
 app.include_router(insights.router)
 app.include_router(groups.router)
+app.include_router(settings.router)
 
 
 

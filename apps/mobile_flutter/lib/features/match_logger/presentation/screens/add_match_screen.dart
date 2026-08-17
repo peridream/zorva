@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../../core/theme/zorva_theme.dart';
 import '../../../../core/constants/supabase_constants.dart';
+import '../../../../core/services/api_service.dart';
+import '../../../../core/services/supabase_service.dart';
 
 class AddMatchScreen extends StatefulWidget {
   const AddMatchScreen({super.key});
@@ -18,8 +20,6 @@ class _AddMatchScreenState extends State<AddMatchScreen> {
   String _selectedOpponentId = '';
 
   // Match Configuration & Eligibility
-  bool _isBothOfficial = false;
-  String _matchType = 'community'; // 'community' or 'official'
   int _setFormat = 3; // 3 or 5
   bool _iWon = true;
   int _selectedPresetIndex = 0;
@@ -35,12 +35,9 @@ class _AddMatchScreenState extends State<AddMatchScreen> {
     final userId = supabase.auth.currentUser?.id ?? SupabaseConstants.currentUserId;
 
     try {
-      final res = await supabase
-          .from('profiles')
-          .select()
-          .neq('id', userId);
+      final res = await SupabaseService.searchOpponents(excludeUserId: userId);
       setState(() {
-        _opponents = List<Map<String, dynamic>>.from(res).take(3).toList();
+        _opponents = res.take(3).toList();
         if (_opponents.isNotEmpty) {
           _selectedOpponentId = _opponents.first['id'];
         }
@@ -53,7 +50,6 @@ class _AddMatchScreenState extends State<AddMatchScreen> {
   }
 
   void _showSearchOpponentModal() async {
-    final supabase = Supabase.instance.client;
     final userId = SupabaseConstants.currentUserId;
 
     showModalBottomSheet(
@@ -71,14 +67,10 @@ class _AddMatchScreenState extends State<AddMatchScreen> {
         return StatefulBuilder(
           builder: (context, setModalState) {
             if (loadingSearch) {
-              supabase
-                  .from('profiles')
-                  .select()
-                  .neq('id', userId)
-                  .then((res) {
+              SupabaseService.searchOpponents(excludeUserId: userId).then((res) {
                 if (mounted) {
                   setModalState(() {
-                    allUsers = List<Map<String, dynamic>>.from(res);
+                    allUsers = res;
                     loadingSearch = false;
                   });
                 }
@@ -293,51 +285,16 @@ class _AddMatchScreenState extends State<AddMatchScreen> {
     final selectedPreset = presets[_selectedPresetIndex % presets.length];
     final List<List<int>> sets = List<List<int>>.from(selectedPreset['sets'] ?? []);
 
-    int creatorWonSets = 0;
-    int opponentWonSets = 0;
-    for (final s in sets) {
-      if (s[0] > s[1]) {
-        creatorWonSets++;
-      } else {
-        opponentWonSets++;
-      }
-    }
-
-    final creatorScore = creatorWonSets;
-    final opponentScore = opponentWonSets;
-
     try {
-      // Auto-detect shared group between p1 and p2
-      String? matchedGroupId;
-      try {
-        final p1Groups = await supabase.from('group_members').select('group_id').eq('user_id', p1);
-        final p2Groups = await supabase.from('group_members').select('group_id').eq('user_id', p2);
-
-        final p1Gids = (p1Groups as List).map((g) => g['group_id'] as String).toSet();
-        final p2Gids = (p2Groups as List).map((g) => g['group_id'] as String).toSet();
-        final common = p1Gids.intersection(p2Gids);
-        if (common.isNotEmpty) {
-          matchedGroupId = common.first;
-        }
-      } catch (gErr) {
-        debugPrint('Group detection note: $gErr');
-      }
-
-      final Map<String, dynamic> matchPayload = {
-        'creator_id': p1,
-        'opponent_id': p2,
-        'sport': 'table_tennis',
-        'creator_score': creatorScore,
-        'opponent_score': opponentScore,
-        'winner_id': winner,
-        'status': 'pending',
-        'logged_at': DateTime.now().toIso8601String(),
-      };
-      if (matchedGroupId != null) {
-        matchPayload['group_id'] = matchedGroupId;
-      }
-
-      await supabase.from('matches').insert(matchPayload);
+      // Record match via FastAPI REST API
+      await ApiService.recordMatch(
+        sportId: 1,
+        player1Id: p1,
+        player2Id: p2,
+        winnerId: winner,
+        scoreJson: {'sets': sets},
+        recordedBy: p1,
+      );
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

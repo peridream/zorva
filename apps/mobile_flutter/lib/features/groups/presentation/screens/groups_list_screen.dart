@@ -42,11 +42,7 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
     final isFlagshipUser = subData?['is_flagship'] == true;
 
     try {
-      final profileRes = await Supabase.instance.client
-          .from('profiles')
-          .select('city')
-          .eq('id', widget.userId)
-          .maybeSingle();
+      final profileRes = await ApiService.getUserProfile(widget.userId);
       if (profileRes != null && profileRes['city'] != null) {
         _userCity = profileRes['city'].toString();
       }

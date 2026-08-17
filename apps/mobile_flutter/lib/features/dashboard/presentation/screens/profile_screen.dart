@@ -5,6 +5,7 @@ import '../../../../core/config/user_session.dart';
 import '../../../../core/constants/supabase_constants.dart';
 import '../../../../core/theme/zorva_theme.dart';
 import '../../../onboarding/presentation/screens/welcome_screen.dart';
+import '../../../../core/services/supabase_service.dart';
 
 class ProfileScreen extends StatefulWidget {
   final String? userId;
@@ -18,7 +19,6 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> {
   bool _loading = true;
   Map<String, dynamic>? _profile;
-  int? _cityRank;
 
   final _nameController = TextEditingController();
   bool _saving = false;
@@ -43,23 +43,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _loadProfile() async {
     setState(() => _loading = true);
-    final supabase = Supabase.instance.client;
     try {
-      final profileRes = await supabase
-          .from('profiles')
-          .select()
-          .eq('id', _userId)
-          .maybeSingle();
-      if (profileRes != null) _profile = profileRes;
-
-      try {
-        final rankRes = await supabase
-            .from('city_rankings')
-            .select('rank')
-            .eq('user_id', _userId)
-            .maybeSingle();
-        if (rankRes != null) _cityRank = rankRes['rank'] as int?;
-      } catch (_) {}
+      final profileRes = await SupabaseService.getProfile(_userId);
+      if (profileRes != null) {
+        _profile = profileRes;
+      }
     } catch (e) {
       debugPrint('Profile load error: $e');
     } finally {
@@ -156,24 +144,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           onPressed: _saving
                               ? null
                               : () async {
-                                  setSheet(() => _saving = true);
-                                  try {
-                                    await Supabase.instance.client
-                                        .from('profiles')
-                                        .update({
-                                          'full_name': _nameController.text.trim(),
-                                          'city': selectedCity,
-                                        })
-                                        .eq('id', _userId);
-                                    if (mounted) {
-                                      Navigator.pop(ctx);
-                                      _loadProfile();
-                                    }
-                                  } catch (e) {
-                                    debugPrint('Update error: $e');
-                                  } finally {
-                                    if (mounted) setSheet(() => _saving = false);
-                                  }
+                                   setSheet(() => _saving = true);
+                                   try {
+                                     await SupabaseService.updateProfile(_userId, {
+                                       'full_name': _nameController.text.trim(),
+                                       'city': selectedCity,
+                                     });
+                                     if (mounted) {
+                                       Navigator.pop(ctx);
+                                       _loadProfile();
+                                     }
+                                   } catch (e) {
+                                     debugPrint('Update error: $e');
+                                   } finally {
+                                     if (mounted) setSheet(() => _saving = false);
+                                   }
                                 },
                           child: _saving
                               ? const CircularProgressIndicator(color: ZorvaTheme.background)
@@ -286,7 +271,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final name = _profile?['full_name'] as String? ?? 'Player';
     final city = _profile?['city'] as String? ?? '—';
     final sport = _profile?['sport'] as String? ?? 'Table Tennis';
-    final email = _profile?['email'] as String? ?? '';
 
     return Scaffold(
       backgroundColor: ZorvaTheme.background,
@@ -441,37 +425,4 @@ class _ProfileScreenState extends State<ProfileScreen> {
       ),
     );
   }
-
-  Widget _statCard(String label, String value, IconData icon,
-      {bool highlight = false, bool danger = false}) {
-    final color = danger
-        ? Colors.redAccent
-        : highlight
-            ? ZorvaTheme.primaryGold
-            : ZorvaTheme.textSecondary;
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1C2024),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-            color: highlight && !danger ? const Color(0x44D4AF37) : ZorvaTheme.borderSubtle),
-      ),
-      child: Column(
-        children: [
-          Icon(icon, size: 20, color: color),
-          const SizedBox(height: 6),
-          Text(value,
-              style: TextStyle(
-                fontSize: 18, fontWeight: FontWeight.w900,
-                color: color, height: 1,
-              )),
-          const SizedBox(height: 3),
-          Text(label,
-              style: const TextStyle(fontSize: 10, color: ZorvaTheme.textMuted, letterSpacing: 0.5)),
-        ],
-      ),
-    );
-  }
-
 }

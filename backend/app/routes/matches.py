@@ -22,7 +22,7 @@ router = APIRouter(prefix="/matches", tags=["matches"])
 
 def _get_or_create_context_rating(user_id: str, context_id: str) -> dict:
     """Fetch a player's rating row for a context, creating a default
-    one (1500/350/0.06) if this is their first match in it."""
+    one (1200/350/0.06) if this is their first match in it."""
     existing = (
         supabase.table("player_context_ratings")
         .select("*")
@@ -47,47 +47,36 @@ def _get_or_create_context_rating(user_id: str, context_id: str) -> dict:
     return created.data[0]
 
 
-def _get_eligible_contexts(sport_id: int, player1_id: str, player2_id: str) -> list[dict]:
-    """
-    A match is eligible to update a rating context if:
-      - it's the 'community' context for this sport (everyone is always eligible), OR
-      - it's the 'flagship' context AND both players have an active Flagship/Founder membership
-        in `premium_subscriptions`.
+def _get_eligible_contexts(sport_id: int, player1_id: str, player2_id: str) -> list:
+    """Determines which rating context a match updates:
+    - If EITHER player is on 'community' plan -> 'community' context only.
+    - Otherwise (both players are on flagship/founder/trial plan) -> 'flagship' context only.
     """
     contexts = (
         supabase.table("rating_contexts")
         .select("*")
         .eq("sport_id", sport_id)
         .execute()
-        .data
+        .data or []
     )
+    if not contexts:
+        return []
 
-    eligible = []
-    
-    # Check subscription status for flagship eligibility
-    flagship_plans = {"founder_flagship", "flagship"}
     subs = (
-        supabase.table("premium_subscriptions")
-        .select("user_id, plan_id, status")
+        supabase.table("subscriptions")
+        .select("user_id, plan_id")
         .in_("user_id", [player1_id, player2_id])
-        .eq("status", "active")
         .execute()
         .data or []
     )
-    
-    flagship_users = {
-        s["user_id"] for s in subs if s.get("plan_id") in flagship_plans
-    }
-    both_are_flagship = {player1_id, player2_id}.issubset(flagship_users)
 
-    for ctx in contexts:
-        ctx_type = ctx.get("type")
-        if ctx_type == "community":
-            eligible.append(ctx)
-        elif ctx_type == "flagship" and both_are_flagship:
-            eligible.append(ctx)
+    # If either player is 'community' (or missing subscription), it's a community match
+    has_community_player = any(s.get("plan_id") == "community" for s in subs) or len(subs) < 2
 
-    return eligible
+    if has_community_player:
+        return [c for c in contexts if c.get("type") == "community"]
+    else:
+        return [c for c in contexts if c.get("type") == "flagship"]
 
 
 def _apply_ratings_for_confirmed_match(match: dict) -> None:
@@ -284,7 +273,7 @@ def get_user_matches(user_id: str, limit: int = 20):
         supabase.table("matches")
         .select("*, p1:player1_id(display_name, username), p2:player2_id(display_name, username)")
         .or_(f"player1_id.eq.{user_id},player2_id.eq.{user_id}")
-        .order("created_at", desc=True)
+        .order("logged_at", desc=True)
         .limit(limit)
         .execute()
         .data

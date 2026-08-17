@@ -15,16 +15,30 @@ def get_player_insights(user_id: str):
 
     # 1. Determine User Subscription Tier (Flagship vs Community)
     sub_res = (
-        supabase.table("premium_subscriptions")
-        .select("plan_id, status")
+        supabase.table("subscriptions")
+        .select("plan_id, status, trial_ends_at")
         .eq("user_id", user_id)
         .execute()
     )
     sub_data = sub_res.data[0] if sub_res.data else {}
     plan_id = sub_data.get("plan_id", "community_trial")
     sub_status = sub_data.get("status", "active")
+    
+    is_flagship = False
+    if plan_id in {"founder_flagship", "flagship"} and sub_status == "active":
+        is_flagship = True
+    elif plan_id == "community_trial" and sub_status == "active":
+        trial_str = sub_data.get("trial_ends_at")
+        if not trial_str:
+            is_flagship = True
+        else:
+            try:
+                import datetime
+                trial_dt = datetime.datetime.fromisoformat(trial_str.replace("Z", "+00:00"))
+                is_flagship = datetime.datetime.now(datetime.timezone.utc) < trial_dt
+            except Exception:
+                is_flagship = True
 
-    is_flagship = sub_status == "active" and plan_id in {"founder_flagship", "flagship"}
     target_context_type = "flagship" if is_flagship else "community"
 
     # 2. Fetch rating contexts and player ratings for target context
@@ -119,7 +133,7 @@ def get_player_insights(user_id: str):
                 supabase.table("matches")
                 .select("*")
                 .or_(f"creator_id.eq.{user_id},opponent_id.eq.{user_id}")
-                .eq("status", "verified")
+                .eq("status", "confirmed")
                 .order("logged_at", desc=False)
                 .execute()
             )

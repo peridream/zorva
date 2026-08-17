@@ -7,25 +7,6 @@ class UserSession {
   static String city = 'Austin';
   static double glickoRating = 1500.0;
 
-  /// Asynchronously queries Supabase profiles for existing players in a city and returns exact row count
-  static Future<int> registerAndGetNextRank(String cityInput) async {
-    final cleanCity = cityInput.trim();
-    int currentCount = 0;
-
-    try {
-      final supabase = Supabase.instance.client;
-      final res = await supabase
-          .from('profiles')
-          .select('id')
-          .ilike('city', cleanCity);
-      currentCount = res.length;
-      debugPrint('Exact Supabase profiles count for "$cleanCity": $currentCount');
-    } catch (dbErr) {
-      debugPrint('DB city count query note: $dbErr');
-    }
-
-    return currentCount;
-  }
 
   static String getOrdinal(int n) {
     final val = n <= 0 ? 1 : n;

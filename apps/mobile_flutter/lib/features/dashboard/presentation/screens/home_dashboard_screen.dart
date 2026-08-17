@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../../core/config/user_session.dart';
@@ -6,11 +8,12 @@ import '../../../../core/constants/supabase_constants.dart';
 import '../../../match_logger/presentation/screens/add_match_screen.dart';
 import '../../../leaderboards/presentation/screens/leaderboards_screen.dart';
 import '../../../onboarding/presentation/screens/welcome_screen.dart';
-import '../../../rating/domain/glicko2.dart';
 import 'profile_screen.dart';
 import 'insights_screen.dart';
+import '../../../onboarding/presentation/screens/player_profiling_screen.dart';
 import '../../../../core/constants/subscription_constants.dart';
 import '../../../../core/services/api_service.dart';
+import '../../../../core/services/supabase_service.dart';
 import '../../../groups/presentation/screens/group_detail_screen.dart';
 import '../../../groups/presentation/screens/groups_list_screen.dart';
 
@@ -38,6 +41,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
 
   String _userPlanId = SubscriptionConstants.planCommunityTrial;
   String _userSubStatus = SubscriptionConstants.statusActive;
+  bool _isFounder = false;
+  DateTime? _trialEndsAt;
+  int? _daysRemaining;
 
   Map<String, dynamic>? _userProfile;
   List<Map<String, dynamic>> _userRatings = [];
@@ -49,12 +55,49 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
   List<double> _ratingHistoryPoints = [];
   int _totalVerifiedMatchesCount = 0;
   List<Map<String, dynamic>> _userGroups = [];
+  Timer? _popupAutoDismissTimer;
 
   String get _effectiveUserId =>
       widget.userId ??
       Supabase.instance.client.auth.currentUser?.id ??
       UserSession.userId ??
       SupabaseConstants.currentUserId;
+
+  Map<String, dynamic> _extractRatingContext(dynamic r) {
+    if (r == null || r is! Map) return {};
+    final ctx = r['rating_contexts'];
+    if (ctx is Map) {
+      return Map<String, dynamic>.from(ctx);
+    } else if (ctx is List && ctx.isNotEmpty && ctx[0] is Map) {
+      return Map<String, dynamic>.from(ctx[0]);
+    }
+    return {};
+  }
+
+  /// Evaluates which rating cards to display on the dashboard based on user subscription:
+  /// - Flagship/Founder/Trial users: View full ratings (Official Flagship, Group, etc.)
+  /// - Free Community users: View Community rating
+  List<Map<String, dynamic>> get _visibleRatings {
+    if (_userRatings.isEmpty) return [];
+
+    final bool hasFlagship = SubscriptionConstants.hasFlagshipAccess(
+      planId: _userPlanId,
+      status: _userSubStatus,
+      trialEndsAt: _trialEndsAt,
+      isFounder: _isFounder,
+    );
+
+    if (hasFlagship) {
+      return _userRatings;
+    } else {
+      final freeRatings = _userRatings.where((r) {
+        final ctx = _extractRatingContext(r);
+        final t = r['context_type'] ?? ctx['type'] ?? '';
+        return t != 'flagship';
+      }).toList();
+      return freeRatings.isNotEmpty ? freeRatings : [_userRatings.first];
+    }
+  }
 
   RealtimeChannel? _dashboardRealtimeChannel;
 
@@ -107,169 +150,80 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
 
   Future<void> _loadDashboardData({bool silent = false}) async {
     if (!silent) setState(() => _loading = true);
-    final supabase = Supabase.instance.client;
     final userId = _effectiveUserId;
 
     try {
-      // 1. User Profile from Supabase `profiles` table
-      try {
-        final profileRes =
-            await supabase.from('profiles').select().eq('id', userId).maybeSingle();
-        if (profileRes != null) {
-          _userProfile = profileRes;
+      await ApiService.fetchSettings();
+
+      final dashData = await ApiService.getUserDashboard(userId);
+      if (dashData != null) {
+        if (dashData['profile'] != null && (dashData['profile'] as Map).isNotEmpty) {
+          _userProfile = Map<String, dynamic>.from(dashData['profile']);
         }
-      } catch (pErr) {
-        debugPrint('Profile fetch note: $pErr');
+        if (dashData['ratings'] != null) {
+          _userRatings = List<Map<String, dynamic>>.from(dashData['ratings']);
+        }
+        if (dashData['verified_matches'] != null) {
+          final List<Map<String, dynamic>> enrichedMatches = [];
+          for (var m in (dashData['verified_matches'] as List)) {
+            final map = Map<String, dynamic>.from(m);
+            final isCreator = map['creator_id'] == userId;
+            final opp = isCreator ? map['opponent'] : map['creator'];
+            final rawName = opp?['full_name'] ?? opp?['username'];
+            map['opponent_name'] = (rawName != null && rawName.toString().trim().isNotEmpty)
+                ? rawName.toString().trim()
+                : 'Player';
+            map['opponent_city'] = opp?['city'] ?? '';
+            map['is_official'] = true;
+            enrichedMatches.add(map);
+          }
+          _recentMatches = enrichedMatches;
+          _totalVerifiedMatchesCount = _recentMatches.length;
+        }
+        if (dashData['pending_matches'] != null) {
+          final List<Map<String, dynamic>> enrichedPending = [];
+          for (var pm in (dashData['pending_matches'] as List)) {
+            final map = Map<String, dynamic>.from(pm);
+            final isCreator = map['creator_id'] == userId;
+            final opp = isCreator ? map['opponent'] : map['creator'];
+            final rawName = opp?['full_name'] ?? opp?['username'];
+            map['other_name'] = (rawName != null && rawName.toString().trim().isNotEmpty)
+                ? rawName.toString().trim()
+                : 'Player';
+            map['other_city'] = opp?['city'] ?? '';
+            map['creator_name'] = isCreator ? 'You' : map['other_name'];
+            map['is_incoming'] = !isCreator;
+            enrichedPending.add(map);
+          }
+          _pendingMatches = enrichedPending;
+        }
+        if (dashData['subscription'] != null && (dashData['subscription'] as Map).isNotEmpty) {
+          final s = dashData['subscription'];
+          _userPlanId = s['plan_id'] ?? SubscriptionConstants.planCommunityTrial;
+          _userSubStatus = s['status'] ?? SubscriptionConstants.statusActive;
+          _isFounder = s['is_founder'] == true || _userPlanId == SubscriptionConstants.planFounderFlagship;
+          final trialStr = s['trial_ends_at'];
+          if (trialStr != null) {
+            try {
+              _trialEndsAt = DateTime.parse(trialStr.toString());
+            } catch (_) {}
+          }
+          if (s['days_remaining'] != null) {
+            _daysRemaining = int.tryParse(s['days_remaining'].toString());
+          }
+        }
       }
 
-      // 2. Ratings (Fetch both Community and Official Flagship contexts)
-      try {
-        final ratingRes = await supabase
-            .from('player_context_ratings')
-            .select('*, rating_contexts(id, name, type)')
-            .eq('user_id', userId);
-        _userRatings = List<Map<String, dynamic>>.from(ratingRes);
-      } catch (rErr) {
-        debugPrint('Ratings fetch note: $rErr');
-      }
-
-      // Sort so Official (flagship) is index 0 if present
+      // Sort ratings so Official (flagship) is index 0 if present
       _userRatings.sort((a, b) {
-        final typeA = a['rating_contexts']?['type'] ?? '';
-        final typeB = b['rating_contexts']?['type'] ?? '';
+        final ctxA = _extractRatingContext(a);
+        final ctxB = _extractRatingContext(b);
+        final typeA = a['context_type'] ?? ctxA['type'] ?? '';
+        final typeB = b['context_type'] ?? ctxB['type'] ?? '';
         if (typeA == 'flagship') return -1;
         if (typeB == 'flagship') return 1;
         return 0;
       });
-
-      // 3. Recent Matches (Enriched with Opponent Name & City)
-      try {
-        final matchesRes = await supabase
-            .from('matches')
-            .select('*')
-            .or('creator_id.eq.$userId,opponent_id.eq.$userId')
-            .eq('status', 'confirmed')
-            .order('logged_at', ascending: false)
-            .limit(10);
-
-        final List<Map<String, dynamic>> enrichedMatches = [];
-        for (var m in matchesRes) {
-          final isCreator = m['creator_id'] == userId;
-          final opponentId = isCreator ? m['opponent_id'] : m['creator_id'];
-          final matchId = m['id'];
-
-          final opponentProfile = await supabase
-              .from('profiles')
-              .select('full_name, username, city')
-              .eq('id', opponentId)
-              .maybeSingle();
-
-          bool isOfficial = false;
-          try {
-            final linkRes = await supabase
-                .from('match_context_links')
-                .select('context_id, rating_contexts(type)')
-                .eq('match_id', matchId);
-
-            if (linkRes != null && (linkRes as List).isNotEmpty) {
-              for (var link in linkRes) {
-                final ctx = link['rating_contexts'];
-                if (ctx != null) {
-                  final type = ctx is Map
-                      ? ctx['type']
-                      : (ctx is List && (ctx as List).isNotEmpty ? ctx[0]['type'] : null);
-                  if (type == 'flagship') {
-                    isOfficial = true;
-                    break;
-                  }
-                }
-              }
-            }
-          } catch (lErr) {
-            debugPrint('match_context_links lookup note: $lErr');
-          }
-
-          final map = Map<String, dynamic>.from(m);
-          final rawOppName = opponentProfile?['full_name'] ?? opponentProfile?['username'];
-          map['opponent_name'] = (rawOppName != null && rawOppName.toString().trim().isNotEmpty)
-              ? rawOppName.toString().trim()
-              : 'Player';
-          map['opponent_city'] = opponentProfile?['city'] ?? '';
-          map['is_official'] = isOfficial;
-          enrichedMatches.add(map);
-        }
-        _recentMatches = enrichedMatches;
-
-        // Fetch total confirmed matches count for trial tracking
-        final allRes = await supabase
-            .from('matches')
-            .select('id')
-            .or('creator_id.eq.$userId,opponent_id.eq.$userId')
-            .eq('status', 'confirmed');
-        _totalVerifiedMatchesCount = (allRes as List).length;
-      } catch (mErr) {
-        debugPrint('Recent matches fetch note: $mErr');
-      }
-
-      // 4. Pending Matches (Both incoming requiring approval & outgoing waiting for opponent)
-      try {
-        final pendingRes = await supabase
-            .from('matches')
-            .select('*')
-            .or('creator_id.eq.$userId,opponent_id.eq.$userId')
-            .eq('status', 'pending')
-            .order('logged_at', ascending: false);
-
-        final List<Map<String, dynamic>> enrichedPending = [];
-        for (var pm in pendingRes) {
-          final isCreator = pm['creator_id'] == userId;
-          final otherId = isCreator ? pm['opponent_id'] : pm['creator_id'];
-
-          final otherProfile = await supabase
-              .from('profiles')
-              .select('full_name, username, city')
-              .eq('id', otherId)
-              .maybeSingle();
-
-          final map = Map<String, dynamic>.from(pm);
-          final rawName = otherProfile?['full_name'] ?? otherProfile?['username'];
-          map['other_name'] = (rawName != null && rawName.toString().trim().isNotEmpty)
-              ? rawName.toString().trim()
-              : 'Player';
-          map['other_city'] = otherProfile?['city'] ?? '';
-          map['creator_name'] = isCreator ? 'You' : map['other_name'];
-          map['is_incoming'] = !isCreator; // Needs current user approval
-          enrichedPending.add(map);
-        }
-        _pendingMatches = enrichedPending;
-      } catch (pErr) {
-        debugPrint('Pending matches fetch note: $pErr');
-      }
-
-      // 5. Fetch Subscription Info from premium_subscriptions
-      try {
-        final serverSub = await ApiService.getSubscription(userId);
-        if (serverSub != null) {
-          _userPlanId = serverSub['plan_id'] ?? SubscriptionConstants.planCommunityTrial;
-          _userSubStatus = serverSub['status'] ?? SubscriptionConstants.statusActive;
-          if (serverSub['verified_matches_count'] != null) {
-            _totalVerifiedMatchesCount = (serverSub['verified_matches_count'] as num).toInt();
-          }
-        } else {
-          final subRes = await supabase
-              .from('premium_subscriptions')
-              .select('plan_id, status')
-              .eq('user_id', userId)
-              .maybeSingle();
-
-          if (subRes != null) {
-            _userPlanId = subRes['plan_id'] ?? SubscriptionConstants.planCommunityTrial;
-            _userSubStatus = subRes['status'] ?? SubscriptionConstants.statusActive;
-          }
-        }
-      } catch (sErr) {
-        debugPrint('Subscription fetch note: $sErr');
-      }
 
       // 6. Fetch User Groups
       try {
@@ -280,7 +234,12 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
     } catch (e) {
       debugPrint('Error loading dashboard: $e');
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() => _loading = false);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _checkAndShowMilestonePopups();
+        });
+      }
     }
   }
 
@@ -473,10 +432,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
 
   Future<void> _declineMatch(String matchId) async {
     final supabase = Supabase.instance.client;
+    final userId = supabase.auth.currentUser?.id ?? _effectiveUserId;
     try {
-      await supabase.from('matches').update({
-        'status': 'rejected',
-      }).eq('id', matchId);
+      await ApiService.confirmMatch(matchId, userId, action: 'disputed');
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -497,152 +455,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
     final userId = supabase.auth.currentUser?.id ?? _effectiveUserId;
 
     try {
-      // 1. Record user confirmation
-      await supabase.from('match_confirmations').upsert({
-        'match_id': matchId,
-        'user_id': userId,
-        'action': 'confirmed',
-      }, onConflict: 'match_id,user_id');
-
-      // 2. Fetch match info
-      final matchRes =
-          await supabase.from('matches').select().eq('id', matchId).maybeSingle();
-
-      if (matchRes != null) {
-        final String creatorId = matchRes['creator_id'];
-        final String opponentId = matchRes['opponent_id'];
-        final String winnerId = matchRes['winner_id'] ?? creatorId;
-        final bool creatorWon = winnerId == creatorId;
-
-        // 3. Mark match as confirmed
-        await supabase.from('matches').update({
-          'status': 'confirmed',
-        }).eq('id', matchId);
-
-        // 4. Multi-Context Glicko-2 Update: Fetch all rating contexts shared by both players
-        final creatorContexts = await supabase
-            .from('player_context_ratings')
-            .select('context_id')
-            .eq('user_id', creatorId);
-
-        final creatorContextIds =
-            (creatorContexts as List).map((c) => c['context_id'] as String).toSet();
-
-        final opponentContexts = await supabase
-            .from('player_context_ratings')
-            .select('context_id')
-            .eq('user_id', opponentId);
-
-        final opponentContextIds =
-            (opponentContexts as List).map((c) => c['context_id'] as String).toSet();
-
-        // Target all shared contexts, or default to Community context
-        Set<String> sharedContextIds = creatorContextIds.intersection(opponentContextIds);
-
-        final defaultCommunityContext = await supabase
-            .from('rating_contexts')
-            .select('id')
-            .eq('type', 'community')
-            .maybeSingle();
-
-        if (defaultCommunityContext != null) {
-          sharedContextIds.add(defaultCommunityContext['id'] as String);
-        }
-
-        // Loop over EVERY shared rating context (Community, Flagship, Age Tiers, Leagues)
-        for (final String cId in sharedContextIds) {
-          // Fetch Creator PCR for this context
-          final creatorRatingRes = await supabase
-              .from('player_context_ratings')
-              .select()
-              .eq('user_id', creatorId)
-              .eq('context_id', cId)
-              .maybeSingle();
-
-          // Fetch Opponent PCR for this context
-          final opponentRatingRes = await supabase
-              .from('player_context_ratings')
-              .select()
-              .eq('user_id', opponentId)
-              .eq('context_id', cId)
-              .maybeSingle();
-
-          final creatorState = RatingState(
-            rating: (creatorRatingRes?['rating'] as num?)?.toDouble() ?? 1500.0,
-            rd: (creatorRatingRes?['rd'] as num?)?.toDouble() ?? 350.0,
-            volatility: (creatorRatingRes?['volatility'] as num?)?.toDouble() ?? 0.06,
-          );
-
-          final opponentState = RatingState(
-            rating: (opponentRatingRes?['rating'] as num?)?.toDouble() ?? 1500.0,
-            rd: (opponentRatingRes?['rd'] as num?)?.toDouble() ?? 350.0,
-            volatility: (opponentRatingRes?['volatility'] as num?)?.toDouble() ?? 0.06,
-          );
-
-          // Calculate Glicko-2 engine outcome
-          final glickoResult = Glicko2Engine.applyMatchResult(
-            playerA: creatorState,
-            playerB: opponentState,
-            aWon: creatorWon,
-          );
-
-          final newCreatorState = glickoResult['playerA']!;
-          final newOpponentState = glickoResult['playerB']!;
-
-          final cWins = (creatorRatingRes?['wins'] as int? ?? 0) + (creatorWon ? 1 : 0);
-          final cLosses = (creatorRatingRes?['losses'] as int? ?? 0) + (creatorWon ? 0 : 1);
-          final cPlayed = (creatorRatingRes?['matches_played'] as int? ?? 0) + 1;
-
-          final oWins = (opponentRatingRes?['wins'] as int? ?? 0) + (creatorWon ? 0 : 1);
-          final oLosses = (opponentRatingRes?['losses'] as int? ?? 0) + (creatorWon ? 1 : 0);
-          final oPlayed = (opponentRatingRes?['matches_played'] as int? ?? 0) + 1;
-
-          // Upsert Creator PCR for this context
-          await supabase.from('player_context_ratings').upsert({
-            'user_id': creatorId,
-            'context_id': cId,
-            'rating': newCreatorState.rating,
-            'rd': newCreatorState.rd,
-            'volatility': newCreatorState.volatility,
-            'wins': cWins,
-            'losses': cLosses,
-            'matches_played': cPlayed,
-            'updated_at': DateTime.now().toIso8601String(),
-          }, onConflict: 'user_id,context_id');
-
-          // Upsert Opponent PCR for this context
-          await supabase.from('player_context_ratings').upsert({
-            'user_id': opponentId,
-            'context_id': cId,
-            'rating': newOpponentState.rating,
-            'rd': newOpponentState.rd,
-            'volatility': newOpponentState.volatility,
-            'wins': oWins,
-            'losses': oLosses,
-            'matches_played': oPlayed,
-            'updated_at': DateTime.now().toIso8601String(),
-          }, onConflict: 'user_id,context_id');
-
-          // Audit Log into match_context_links
-          try {
-            await supabase.from('match_context_links').upsert({
-              'match_id': matchId,
-              'context_id': cId,
-              'p1_rating_before': creatorState.rating,
-              'p1_rating_after': newCreatorState.rating,
-              'p2_rating_before': opponentState.rating,
-              'p2_rating_after': newOpponentState.rating,
-              'created_at': DateTime.now().toIso8601String(),
-            }, onConflict: 'match_id,context_id');
-          } catch (mclErr) {
-            debugPrint('match_context_links note: $mclErr');
-          }
-        }
-
-        // STEP 2: Check and expire trial if verified matches > 10
-        await _checkAndUpdateTrialExpiration(creatorId);
-        await _checkAndUpdateTrialExpiration(opponentId);
-      }
+      await ApiService.confirmMatch(matchId, userId, action: 'confirmed');
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -668,39 +481,6 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
     }
   }
 
-  Future<void> _checkAndUpdateTrialExpiration(String pId) async {
-    try {
-      final supabase = Supabase.instance.client;
-      final sub = await supabase
-          .from('premium_subscriptions')
-          .select('plan_id, status')
-          .eq('user_id', pId)
-          .maybeSingle();
-
-      if (sub != null &&
-          sub['plan_id'] == SubscriptionConstants.planCommunityTrial &&
-          sub['status'] == SubscriptionConstants.statusActive) {
-        
-        final mRes = await supabase
-            .from('matches')
-            .select('id')
-            .or('creator_id.eq.$pId,opponent_id.eq.$pId')
-            .eq('status', 'verified');
-
-        final int totalVerified = mRes.length;
-        if (totalVerified > SubscriptionConstants.trialMaxMatches) {
-          await supabase
-              .from('premium_subscriptions')
-              .update({'status': SubscriptionConstants.statusExpired})
-              .eq('user_id', pId)
-              .eq('plan_id', SubscriptionConstants.planCommunityTrial);
-          debugPrint('Community trial expired for user $pId (Played $totalVerified matches)');
-        }
-      }
-    } catch (e) {
-      debugPrint('Trial check error: $e');
-    }
-  }
 
   void _showRatingsFaqModal() {
     showModalBottomSheet(
@@ -1100,8 +880,8 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
     final matchesPlayed = currentRatingObj?['matches_played'] ?? (wins + losses);
     final winRate =
         matchesPlayed > 0 ? ((wins / matchesPlayed) * 100).round() : 0;
-    final contextType =
-        currentRatingObj?['rating_contexts']?['type'] ?? 'community';
+    final curCtx = currentRatingObj != null ? _extractRatingContext(currentRatingObj) : <String, dynamic>{};
+    final contextType = curCtx['type'] ?? currentRatingObj?['context_type'] ?? 'flagship';
     final isOfficial = contextType == 'flagship';
 
     final city = (_userProfile?['city'] != null && _userProfile!['city'].toString().isNotEmpty)
@@ -1205,6 +985,26 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
                                   fontSize: 13,
                                 ),
                               ),
+                              if (_isFounder) ...[
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: ZorvaTheme.primaryGold.withOpacity(0.18),
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(color: ZorvaTheme.primaryGold, width: 0.8),
+                                  ),
+                                  child: const Text(
+                                    'FOUNDER 👑',
+                                    style: TextStyle(
+                                      color: ZorvaTheme.primaryGold,
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.w900,
+                                      letterSpacing: 0.5,
+                                    ),
+                                  ),
+                                ),
+                              ],
                               const SizedBox(width: 4),
                               const Icon(
                                 Icons.chevron_right_rounded,
@@ -1351,18 +1151,45 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
                 }),
               ],
 
-              // SWIPEABLE RATING CARDS
-              if (_userRatings.isEmpty)
+              // RATING CARDS (Rendered purely from database rating contexts)
+              if (_visibleRatings.isEmpty)
                 _buildRatingCard(
-                  contextName: 'COMMUNITY',
-                  contextType: 'community',
+                  contextName: 'OFFICIAL FLAGSHIP RATING',
+                  contextType: 'flagship',
                   ratingVal: ratingVal,
                   wins: wins,
                   losses: losses,
                   matchesPlayed: matchesPlayed,
                   winRate: winRate,
                   city: city,
+                  rd: (_userProfile?['rating_deviation'] as num?),
                 )
+              else if (_visibleRatings.length == 1)
+                Builder(builder: (context) {
+                  final r = _visibleRatings.first;
+                  final rCtx = _extractRatingContext(r);
+                  final rawType = rCtx['type'] ?? 'flagship';
+                  final rType = r['context_type'] ?? rawType;
+                  final rName = rType == 'flagship'
+                      ? 'OFFICIAL FLAGSHIP RATING'
+                      : (rCtx['name'] ?? (rType == 'community' ? 'COMMUNITY RATING' : rType));
+                  final rVal = (r['rating'] as num?)?.round() ?? 1500;
+                  final rWins = r['wins'] ?? 0;
+                  final rLosses = r['losses'] ?? 0;
+                  final rPlayed = r['matches_played'] ?? (rWins + rLosses);
+                  final rWinRate = rPlayed > 0 ? ((rWins / rPlayed) * 100).round() : 0;
+                  return _buildRatingCard(
+                    contextName: rName.toString().toUpperCase(),
+                    contextType: rType,
+                    ratingVal: rVal,
+                    wins: rWins,
+                    losses: rLosses,
+                    matchesPlayed: rPlayed,
+                    winRate: rWinRate,
+                    city: city,
+                    rd: (r['rd'] as num?) ?? (_userProfile?['rating_deviation'] as num?),
+                  );
+                })
               else
                 Column(
                   children: [
@@ -1370,12 +1197,16 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
                       height: 230,
                       child: PageView.builder(
                         controller: _ratingPageController,
-                        itemCount: _userRatings.length,
+                        itemCount: _visibleRatings.length,
                         onPageChanged: (idx) => setState(() => _selectedRatingIndex = idx),
                         itemBuilder: (context, idx) {
-                          final r = _userRatings[idx];
-                          final rType = r['rating_contexts']?['type'] ?? 'community';
-                          final rName = r['rating_contexts']?['name'] ?? 'Community';
+                          final r = _visibleRatings[idx];
+                          final rCtx = _extractRatingContext(r);
+                          final rawType = rCtx['type'] ?? 'flagship';
+                          final rType = r['context_type'] ?? rawType;
+                          final rName = rType == 'flagship'
+                              ? 'OFFICIAL FLAGSHIP RATING'
+                              : (rCtx['name'] ?? (rType == 'community' ? 'COMMUNITY RATING' : rType));
                           final rVal = (r['rating'] as num?)?.round() ?? 1500;
                           final rWins = r['wins'] ?? 0;
                           final rLosses = r['losses'] ?? 0;
@@ -1392,41 +1223,44 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
                               matchesPlayed: rPlayed,
                               winRate: rWinRate,
                               city: city,
+                              rd: (r['rd'] as num?) ?? (_userProfile?['rating_deviation'] as num?),
                             ),
                           );
                         },
                       ),
                     ),
-                    if (_userRatings.length > 1) ...[
-                      const SizedBox(height: 14),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: List.generate(_userRatings.length, (idx) {
-                          final isActive = idx == _selectedRatingIndex;
-                          return AnimatedContainer(
-                            duration: const Duration(milliseconds: 250),
-                            margin: const EdgeInsets.symmetric(horizontal: 4),
-                            width: isActive ? 20 : 6,
-                            height: 6,
-                            decoration: BoxDecoration(
-                              color: isActive ? ZorvaTheme.primaryGold : ZorvaTheme.borderSubtle,
-                              borderRadius: BorderRadius.circular(3),
-                            ),
-                          );
-                        }),
-                      ),
-                    ],
+                    const SizedBox(height: 14),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: List.generate(_visibleRatings.length, (idx) {
+                        final isActive = idx == _selectedRatingIndex;
+                        return AnimatedContainer(
+                          duration: const Duration(milliseconds: 250),
+                          margin: const EdgeInsets.symmetric(horizontal: 4),
+                          width: isActive ? 20 : 6,
+                          height: 6,
+                          decoration: BoxDecoration(
+                            color: isActive ? ZorvaTheme.primaryGold : ZorvaTheme.borderSubtle,
+                            borderRadius: BorderRadius.circular(3),
+                          ),
+                        );
+                      }),
+                    ),
                   ],
                 ),
               const SizedBox(height: 24),
 
-              // INSIGHTS & ANALYTICS BUTTON CARD (With 10-Match Trial & Lock System)
+              // INSIGHTS & ANALYTICS BUTTON CARD (With Dynamic Trial & Lock System)
               InkWell(
                 onTap: () {
-                  final bool isFlagship = SubscriptionConstants.isFlagshipMember(_userPlanId, _userSubStatus);
-                  final bool isTrialActive = SubscriptionConstants.isTrialActive(_userPlanId, _userSubStatus, _totalVerifiedMatchesCount);
+                  final bool hasAccess = SubscriptionConstants.hasFlagshipAccess(
+                    planId: _userPlanId,
+                    status: _userSubStatus,
+                    trialEndsAt: _trialEndsAt,
+                    isFounder: _isFounder,
+                  );
 
-                  if (isFlagship || isTrialActive) {
+                  if (hasAccess) {
                     Navigator.push(
                       context,
                       MaterialPageRoute(
@@ -1451,8 +1285,12 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
                       Row(
                         children: [
                           Icon(
-                            SubscriptionConstants.isFlagshipMember(_userPlanId, _userSubStatus) ||
-                                    SubscriptionConstants.isTrialActive(_userPlanId, _userSubStatus, _totalVerifiedMatchesCount)
+                            SubscriptionConstants.hasFlagshipAccess(
+                              planId: _userPlanId,
+                              status: _userSubStatus,
+                              trialEndsAt: _trialEndsAt,
+                              isFounder: _isFounder,
+                            )
                                 ? Icons.insights_rounded
                                 : Icons.lock_rounded,
                             color: ZorvaTheme.primaryGold,
@@ -1463,11 +1301,20 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                SubscriptionConstants.isFlagshipMember(_userPlanId, _userSubStatus)
-                                    ? 'PLAYER INSIGHTS & ANALYTICS'
-                                    : SubscriptionConstants.isTrialActive(_userPlanId, _userSubStatus, _totalVerifiedMatchesCount)
-                                        ? '✨ FLAGSHIP TRIAL (${(SubscriptionConstants.trialMaxMatches - _totalVerifiedMatchesCount).clamp(0, 10)} / 10 LEFT)'
-                                        : '🔒 UNLOCK PLAYER INSIGHTS & ANALYTICS',
+                                _isFounder || _userPlanId == SubscriptionConstants.planFounderFlagship
+                                    ? 'PLAYER INSIGHTS & ANALYTICS ⚡'
+                                    : _userPlanId == SubscriptionConstants.planFlagship
+                                        ? 'PLAYER INSIGHTS & ANALYTICS 💎'
+                                        : SubscriptionConstants.hasFlagshipAccess(
+                                            planId: _userPlanId,
+                                            status: _userSubStatus,
+                                            trialEndsAt: _trialEndsAt,
+                                            isFounder: _isFounder,
+                                          )
+                                            ? (_daysRemaining != null
+                                                ? '✨ FLAGSHIP TRIAL ($_daysRemaining DAYS LEFT)'
+                                                : '✨ FLAGSHIP TRIAL')
+                                            : '🔒 UNLOCK PLAYER INSIGHTS & ANALYTICS',
                                 style: const TextStyle(
                                   color: ZorvaTheme.primaryGold,
                                   fontSize: 12,
@@ -1477,11 +1324,14 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
                               ),
                               const SizedBox(height: 2),
                               Text(
-                                SubscriptionConstants.isFlagshipMember(_userPlanId, _userSubStatus)
+                                SubscriptionConstants.hasFlagshipAccess(
+                                  planId: _userPlanId,
+                                  status: _userSubStatus,
+                                  trialEndsAt: _trialEndsAt,
+                                  isFounder: _isFounder,
+                                )
                                     ? 'Rating Trajectory, Streaks & Rivalries'
-                                    : SubscriptionConstants.isTrialActive(_userPlanId, _userSubStatus, _totalVerifiedMatchesCount)
-                                        ? 'Enjoy your 10-match Insights preview'
-                                        : 'Upgrade to Flagship to view trajectory graphs',
+                                    : 'Upgrade to Flagship to view trajectory graphs',
                                 style: const TextStyle(
                                   color: ZorvaTheme.textMuted,
                                   fontSize: 11,
@@ -2017,6 +1867,389 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
     );
   }
 
+  Future<void> _recordSeenMilestone(String milestoneId) async {
+    try {
+      final seen = List<String>.from(_userProfile?['seen_milestones'] ?? []);
+      if (!seen.contains(milestoneId)) {
+        seen.add(milestoneId);
+        if (_userProfile != null) {
+          _userProfile!['seen_milestones'] = seen;
+        }
+        final supabase = Supabase.instance.client;
+        await supabase.from('profiles').update({
+          'seen_milestones': seen,
+        }).eq('id', _effectiveUserId);
+      }
+    } catch (e) {
+      debugPrint('Milestone DB sync note: $e');
+    }
+  }
+
+  void _checkAndShowMilestonePopups() {
+    if (!mounted) return;
+
+    final currentRatingObj = _userRatings.isNotEmpty
+        ? _userRatings[_selectedRatingIndex % _userRatings.length]
+        : null;
+    final wins = currentRatingObj?['wins'] ?? 0;
+    final losses = currentRatingObj?['losses'] ?? 0;
+    final matchesPlayed = currentRatingObj?['matches_played'] ?? (wins + losses);
+    final ratingVal = currentRatingObj != null
+        ? ((currentRatingObj['rating'] as num?)?.round() ?? 1200)
+        : 1200;
+
+    final rawName = _userProfile?['full_name'] ?? _userProfile?['username'] ?? widget.displayName ?? UserSession.fullName;
+    final name = (rawName != null && rawName.toString().trim().isNotEmpty)
+        ? rawName.toString().trim()
+        : 'Player';
+    final city = (_userProfile?['city'] != null && _userProfile!['city'].toString().isNotEmpty)
+        ? _userProfile!['city'].toString()
+        : (widget.city ?? UserSession.city ?? 'Local City');
+
+    final seenMilestones = List<String>.from(_userProfile?['seen_milestones'] ?? []);
+
+    // Milestone 1: Welcome Popup (0 matches)
+    if (matchesPlayed == 0 && !seenMilestones.contains('welcome')) {
+      _recordSeenMilestone('welcome');
+      _showMilestoneDialog(
+        icon: Icons.bolt,
+        iconColor: ZorvaTheme.primaryGold,
+        title: 'WELCOME TO ZORVA, ${name.toUpperCase()}!',
+        message: 'Your starting baseline rating is calibrated at $ratingVal PTS.\n\n🎯 Your First Mission:\nLog your first 10 matches with club opponents or friends to lock in your Official Established Rating!',
+        primaryButtonText: 'LOG FIRST MATCH (<10S) ⚡',
+        onPrimary: () {
+          Navigator.pop(context);
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => const AddMatchScreen(),
+            ),
+          );
+        },
+        secondaryButtonText: 'EXPLORE MY PASSPORT',
+      );
+    }
+    // Milestone 2: 10 Matches (Baseline Established & Equipment Passport Invite)
+    else if (matchesPlayed == 10 && !seenMilestones.contains('milestone_10')) {
+      _recordSeenMilestone('milestone_10');
+      final playStyle = _userProfile?['play_style'] as String?;
+      final hasGear = playStyle != null && playStyle.trim().isNotEmpty;
+
+      _showMilestoneDialog(
+        icon: Icons.emoji_events_rounded,
+        iconColor: const Color(0xFF00E676),
+        title: '🏆 OFFICIAL RATING ESTABLISHED!',
+        message: 'Congratulations, $name!\n\nYou have completed your 10 calibration matches. Your official rating is now established at $ratingVal PTS with 80% confidence.' +
+            (!hasGear ? '\n\n🏓 Take 60 seconds to complete your Player Passport (Racket Grip, Rubber Type & Style) to personalize your sports profile.' : ''),
+        primaryButtonText: !hasGear ? 'COMPLETE PASSPORT (1 MIN) 🏓' : 'KEEP CLIMBING ⚡',
+        onPrimary: () {
+          Navigator.pop(context);
+          if (!hasGear) {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => PlayerProfilingScreen(
+                  userId: _effectiveUserId,
+                  displayName: name,
+                  city: city,
+                ),
+              ),
+            );
+          }
+        },
+        secondaryButtonText: !hasGear ? 'MAYBE LATER' : null,
+      );
+    }
+    // Milestone 3: 20 Matches (Verified Competitor)
+    else if (matchesPlayed == 20 && !seenMilestones.contains('milestone_20')) {
+      _recordSeenMilestone('milestone_20');
+      _showMilestoneDialog(
+        icon: Icons.workspace_premium,
+        iconColor: ZorvaTheme.primaryGold,
+        title: '💎 VERIFIED COMPETITOR UNLOCKED!',
+        message: 'Congratulations, $name!\n\nYou have reached 20+ verified matches! Your player rating is now certified at 95%+ mathematical precision.',
+        primaryButtonText: 'KEEP CLIMBING ⚡',
+        onPrimary: () => Navigator.pop(context),
+      );
+    }
+  }
+
+  void _showMilestoneDialog({
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    required String message,
+    required String primaryButtonText,
+    required VoidCallback onPrimary,
+    String? secondaryButtonText,
+  }) {
+    _popupAutoDismissTimer?.cancel();
+
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (dialogCtx) {
+        // Auto-dismiss smoothly after 10 seconds if untouched
+        _popupAutoDismissTimer = Timer(const Duration(seconds: 10), () {
+          if (dialogCtx.mounted && Navigator.canPop(dialogCtx)) {
+            Navigator.pop(dialogCtx);
+          }
+        });
+
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(24),
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+              child: Container(
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: const Color(0xEE0B0C0E),
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(color: iconColor, width: 1.5),
+                  boxShadow: [
+                    BoxShadow(
+                      color: iconColor.withOpacity(0.25),
+                      blurRadius: 32,
+                      spreadRadius: 2,
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Top row with Close X
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const SizedBox(width: 24),
+                        Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: iconColor.withOpacity(0.15),
+                            border: Border.all(color: iconColor, width: 1.2),
+                          ),
+                          child: Icon(icon, color: iconColor, size: 36),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close, color: ZorvaTheme.textMuted, size: 20),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          onPressed: () {
+                            _popupAutoDismissTimer?.cancel();
+                            Navigator.pop(dialogCtx);
+                          },
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      title,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: iconColor,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 1.5,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      message,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: ZorvaTheme.textPrimary,
+                        fontSize: 13,
+                        height: 1.5,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 48,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: iconColor == Colors.greenAccent || iconColor == const Color(0xFF00E676)
+                              ? const Color(0xFF00E676)
+                              : ZorvaTheme.primaryGold,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                        ),
+                        onPressed: () {
+                          _popupAutoDismissTimer?.cancel();
+                          onPrimary();
+                        },
+                        child: Text(
+                          primaryButtonText,
+                          style: const TextStyle(
+                            color: ZorvaTheme.background,
+                            fontWeight: FontWeight.w900,
+                            fontSize: 12,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
+                    ),
+                    if (secondaryButtonText != null) ...[
+                      const SizedBox(height: 10),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 44,
+                        child: OutlinedButton(
+                          style: OutlinedButton.styleFrom(
+                            side: const BorderSide(color: ZorvaTheme.borderSubtle),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                          ),
+                          onPressed: () {
+                            _popupAutoDismissTimer?.cancel();
+                            Navigator.pop(dialogCtx);
+                          },
+                          child: Text(
+                            secondaryButtonText,
+                            style: const TextStyle(
+                              color: ZorvaTheme.textSecondary,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 11,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildConfidenceBadge(int matchesPlayed, num? rd) {
+    if (matchesPlayed < 10) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: const Color(0x1AFFB300),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: const Color(0xFFFFB300), width: 1),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.bolt, color: Color(0xFFFFB300), size: 12),
+                const SizedBox(width: 4),
+                Text(
+                  'PROVISIONAL ($matchesPlayed/10)',
+                  style: const TextStyle(
+                    color: Color(0xFFFFB300),
+                    fontSize: 9,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 5),
+            SizedBox(
+              width: 100,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(3),
+                child: LinearProgressIndicator(
+                  value: (matchesPlayed / 10.0).clamp(0.0, 1.0),
+                  backgroundColor: const Color(0x33FFB300),
+                  valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFFFB300)),
+                  minHeight: 4,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    } else if (matchesPlayed < 20) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: const Color(0x1A00E676),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: const Color(0xFF00E676), width: 1),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.check_circle_outline, color: Color(0xFF00E676), size: 12),
+                const SizedBox(width: 4),
+                Text(
+                  'ESTABLISHED ($matchesPlayed/20)',
+                  style: const TextStyle(
+                    color: Color(0xFF00E676),
+                    fontSize: 9,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 5),
+            SizedBox(
+              width: 100,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(3),
+                child: LinearProgressIndicator(
+                  value: (matchesPlayed / 20.0).clamp(0.0, 1.0),
+                  backgroundColor: const Color(0x3300E676),
+                  valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF00E676)),
+                  minHeight: 4,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    } else {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: const Color(0x22D4AF37),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: ZorvaTheme.primaryGold, width: 1),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.workspace_premium, color: ZorvaTheme.primaryGold, size: 14),
+            SizedBox(width: 5),
+            Text(
+              'VERIFIED (95%+ CONF)',
+              style: TextStyle(
+                color: ZorvaTheme.primaryGold,
+                fontSize: 9,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 0.5,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+  }
+
   Widget _buildRatingCard({
     required String contextName,
     required String contextType,
@@ -2026,6 +2259,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
     required int matchesPlayed,
     required int winRate,
     required String city,
+    num? rd,
   }) {
     final isOfficial = contextType == 'flagship';
     final isCityCtx = contextType == 'city';
@@ -2114,39 +2348,46 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> {
           ),
           const SizedBox(height: 14),
 
-          // Big rating number
+          // Big rating number + Confidence pill
           Row(
-            crossAxisAlignment: CrossAxisAlignment.baseline,
-            textBaseline: TextBaseline.alphabetic,
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              ShaderMask(
-                shaderCallback: (bounds) => LinearGradient(
-                  colors: isOfficial
-                      ? const [Color(0xFFFFF0B3), Color(0xFFE5C158), Color(0xFFB88E1C)]
-                      : [accentColor.withOpacity(0.9), accentColor, accentColor.withOpacity(0.7)],
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                ).createShader(bounds),
-                child: Text(
-                  '$ratingVal',
-                  style: const TextStyle(
-                    fontSize: 56,
-                    fontWeight: FontWeight.w900,
-                    color: Colors.white,
-                    letterSpacing: -2,
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.baseline,
+                textBaseline: TextBaseline.alphabetic,
+                children: [
+                  ShaderMask(
+                    shaderCallback: (bounds) => LinearGradient(
+                      colors: isOfficial
+                          ? const [Color(0xFFFFF0B3), Color(0xFFE5C158), Color(0xFFB88E1C)]
+                          : [accentColor.withOpacity(0.9), accentColor, accentColor.withOpacity(0.7)],
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                    ).createShader(bounds),
+                    child: Text(
+                      '$ratingVal',
+                      style: const TextStyle(
+                        fontSize: 54,
+                        fontWeight: FontWeight.w900,
+                        color: Colors.white,
+                        letterSpacing: -2,
+                      ),
+                    ),
                   ),
-                ),
+                  const SizedBox(width: 8),
+                  Text(
+                    'PTS',
+                    style: TextStyle(
+                      color: accentColor.withOpacity(0.7),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(width: 10),
-              Text(
-                'PTS',
-                style: TextStyle(
-                  color: accentColor.withOpacity(0.7),
-                  fontSize: 12,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 1.5,
-                ),
-              ),
+              _buildConfidenceBadge(matchesPlayed, rd),
             ],
           ),
           const SizedBox(height: 16),

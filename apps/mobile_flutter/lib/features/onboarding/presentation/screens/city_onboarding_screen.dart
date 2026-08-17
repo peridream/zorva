@@ -5,10 +5,11 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../../core/config/user_session.dart';
 import '../../../../core/theme/zorva_theme.dart';
-import '../../../../core/constants/subscription_constants.dart';
-import 'player_profiling_screen.dart';
+import '../../../dashboard/presentation/screens/home_dashboard_screen.dart';
 import 'sign_in_screen.dart';
 import 'welcome_screen.dart';
+import '../../../../core/services/api_service.dart';
+import '../../../../core/services/supabase_service.dart';
 
 class CityOnboardingScreen extends StatefulWidget {
   final String authUserId;
@@ -27,9 +28,12 @@ class CityOnboardingScreen extends StatefulWidget {
 class _CityOnboardingScreenState extends State<CityOnboardingScreen> {
   final TextEditingController _fullNameController = TextEditingController();
   final TextEditingController _citySearchController = TextEditingController();
+  final TextEditingController _customRatingController = TextEditingController();
 
   String _selectedCity = 'Austin';
   String _cityQuery = '';
+  double _selectedRating = 1200.0;
+  bool _isCustomRating = false;
   bool _loading = false;
   String? _errorMessage;
   Timer? _errorTimer;
@@ -84,6 +88,7 @@ class _CityOnboardingScreenState extends State<CityOnboardingScreen> {
     _errorTimer?.cancel();
     _fullNameController.dispose();
     _citySearchController.dispose();
+    _customRatingController.dispose();
     super.dispose();
   }
 
@@ -122,17 +127,21 @@ class _CityOnboardingScreenState extends State<CityOnboardingScreen> {
       return;
     }
 
-    setState(() => _loading = true);
+    double finalRating = _selectedRating;
+    if (_isCustomRating) {
+      final customVal = double.tryParse(_customRatingController.text.trim());
+      if (customVal == null || customVal < 200 || customVal > 3000) {
+        _showThemeError('Please enter a valid rating score between 200 and 3000.');
+        return;
+      }
+      finalRating = customVal;
+    }
 
-    final supabase = Supabase.instance.client;
+    setState(() => _loading = true);
 
     // 🔍 Smart Lookup: Check if a player with this Name and City already exists
     try {
-      final existingMatches = await supabase
-          .from('profiles')
-          .select('id, full_name, city, email, phone')
-          .ilike('full_name', fullName)
-          .ilike('city', _selectedCity);
+      final existingMatches = await SupabaseService.checkDuplicateUser(fullName, _selectedCity);
 
       if (existingMatches.isNotEmpty && mounted) {
         final match = existingMatches.first;
@@ -173,11 +182,11 @@ class _CityOnboardingScreenState extends State<CityOnboardingScreen> {
                           color: const Color(0x22D4AF37),
                           border: Border.all(color: ZorvaTheme.primaryGold, width: 1.5),
                         ),
-                        child: const Icon(Icons.person_search, color: ZorvaTheme.primaryGold, size: 38),
+                        child: const Icon(Icons.person_search_rounded, color: ZorvaTheme.primaryGold, size: 40),
                       ),
                       const SizedBox(height: 16),
                       const Text(
-                        'EXISTING PASSPORT FOUND!',
+                        'EXISTING PASSPORT FOUND',
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           color: ZorvaTheme.primaryGold,
@@ -187,49 +196,69 @@ class _CityOnboardingScreenState extends State<CityOnboardingScreen> {
                         ),
                       ),
                       const SizedBox(height: 12),
-                      Text(
-                        'A player named "$fullName" in $_selectedCity is already registered using a $maskContact.\n\nIf this is you, please sign in to access your existing Sports Passport & ratings!',
+                      RichText(
                         textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          color: ZorvaTheme.textPrimary,
-                          fontSize: 13,
-                          height: 1.5,
+                        text: TextSpan(
+                          style: const TextStyle(
+                            color: ZorvaTheme.textPrimary,
+                            fontSize: 14,
+                            height: 1.5,
+                          ),
+                          children: [
+                            const TextSpan(text: 'A player named '),
+                            TextSpan(
+                              text: fullName,
+                              style: const TextStyle(fontWeight: FontWeight.bold, color: ZorvaTheme.primaryGold),
+                            ),
+                            TextSpan(text: ' is already registered in $_selectedCity.\n\nIs this you? Sign in with your $maskContact to continue with your official rating.'),
+                          ],
                         ),
                       ),
                       const SizedBox(height: 24),
-                      SizedBox(
-                        width: double.infinity,
-                        height: 48,
-                        child: ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: ZorvaTheme.primaryGold,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              style: OutlinedButton.styleFrom(
+                                side: const BorderSide(color: ZorvaTheme.borderSubtle),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
+                                padding: const EdgeInsets.symmetric(vertical: 14),
+                              ),
+                              onPressed: () => Navigator.pop(context, false),
+                              child: const Text(
+                                'DIFFERENT PERSON',
+                                style: TextStyle(
+                                  color: ZorvaTheme.textSecondary,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 11,
+                                ),
+                              ),
                             ),
                           ),
-                          onPressed: () => Navigator.pop(context, true),
-                          child: const Text(
-                            'SIGN IN TO EXISTING PASSPORT',
-                            style: TextStyle(
-                              color: ZorvaTheme.background,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 13,
-                              letterSpacing: 1,
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: ElevatedButton(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: ZorvaTheme.primaryGold,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
+                                padding: const EdgeInsets.symmetric(vertical: 14),
+                              ),
+                              onPressed: () => Navigator.pop(context, true),
+                              child: const Text(
+                                'YES, SIGN IN',
+                                style: TextStyle(
+                                  color: ZorvaTheme.background,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 11,
+                                ),
+                              ),
                             ),
                           ),
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      TextButton(
-                        onPressed: () => Navigator.pop(context, false),
-                        child: const Text(
-                          'THIS IS NOT ME (CREATE NEW)',
-                          style: TextStyle(
-                            color: ZorvaTheme.textMuted,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 12,
-                          ),
-                        ),
+                        ],
                       ),
                     ],
                   ),
@@ -256,50 +285,23 @@ class _CityOnboardingScreenState extends State<CityOnboardingScreen> {
     final finalPlayerUuid = _validUuid;
     final autoUsername = '${fullName.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '_')}_${finalPlayerUuid.substring(0, 4)}';
 
-    // Save directly into profiles table matching live Supabase schema
-    try {
-      await supabase.from('profiles').upsert({
-        'id': finalPlayerUuid,
-        'email': widget.email.contains('@') ? widget.email : null,
-        'phone': !widget.email.contains('@') ? widget.email : null,
-        'full_name': fullName,
-        'username': autoUsername,
-        'city': _selectedCity,
-      }, onConflict: 'id');
-      debugPrint('Supabase profile upserted successfully for $fullName');
-    } catch (e) {
-      debugPrint('Profile insert error: $e');
-      if (mounted) {
-        setState(() => _loading = false);
-        _showThemeError('Database Note: $e');
-      }
-      return;
-    }
+    // Register user atomically via FastAPI REST API
+    final regRes = await ApiService.registerUser(
+      userId: finalPlayerUuid,
+      email: widget.email.contains('@') ? widget.email : null,
+      username: autoUsername,
+      fullName: fullName,
+      city: _selectedCity,
+      selfRating: finalRating,
+    );
 
-    // Save to UserSession memory state after confirmed DB save
+    // Save to UserSession memory state after confirmed API save
     UserSession.userId = finalPlayerUuid;
     UserSession.fullName = fullName;
     UserSession.city = _selectedCity;
 
-    // Query exact total player count for this city directly from Supabase profiles table
-    final playerRankNumber = await UserSession.registerAndGetNextRank(_selectedCity);
+    final int playerRankNumber = regRes?['rank'] ?? 1;
     final ordinalRank = UserSession.getOrdinal(playerRankNumber);
-
-    // STEP 1: Assign Subscription Plan based on player rank
-    final String initialPlanId = playerRankNumber <= SubscriptionConstants.foundingMemberCapPerCity
-        ? SubscriptionConstants.planFounderFlagship
-        : SubscriptionConstants.planCommunityTrial;
-
-    try {
-      await supabase.from('premium_subscriptions').upsert({
-        'user_id': finalPlayerUuid,
-        'plan_id': initialPlanId,
-        'status': SubscriptionConstants.statusActive,
-      }, onConflict: 'user_id');
-      debugPrint('Initial subscription saved: $initialPlanId for $finalPlayerUuid');
-    } catch (subErr) {
-      debugPrint('Initial subscription note: $subErr');
-    }
 
     if (mounted) setState(() => _loading = false);
 
@@ -366,7 +368,7 @@ class _CityOnboardingScreenState extends State<CityOnboardingScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'You have claimed a Lifetime Official Sports Rating Pass & City Founder Badge.',
+                    'Starting baseline rating: ${finalRating.toInt()} PTS\nLifetime Official Sports Rating Pass & City Founder Badge activated.',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       color: ZorvaTheme.textSecondary.withOpacity(0.8),
@@ -390,7 +392,7 @@ class _CityOnboardingScreenState extends State<CityOnboardingScreen> {
                         Navigator.pushAndRemoveUntil(
                           context,
                           MaterialPageRoute(
-                            builder: (_) => PlayerProfilingScreen(
+                            builder: (_) => HomeDashboardScreen(
                               userId: finalPlayerUuid,
                               displayName: fullName,
                               city: _selectedCity,
@@ -403,11 +405,11 @@ class _CityOnboardingScreenState extends State<CityOnboardingScreen> {
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           Text(
-                            'CLAIM & CONTINUE',
+                            'ENTER ZORVA ⚡',
                             style: TextStyle(
                               color: ZorvaTheme.background,
                               fontWeight: FontWeight.bold,
-                              fontSize: 14,
+                              fontSize: 13,
                               letterSpacing: 1,
                             ),
                           ),
@@ -420,6 +422,96 @@ class _CityOnboardingScreenState extends State<CityOnboardingScreen> {
                 ],
               ),
             ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _ratingOption(double rating, String title, String subtitle) {
+    final isSelected = !_isCustomRating && _selectedRating == rating;
+    return Expanded(
+      child: GestureDetector(
+        onTap: () {
+          _clearError();
+          setState(() {
+            _selectedRating = rating;
+            _isCustomRating = false;
+          });
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          decoration: BoxDecoration(
+            color: isSelected ? const Color(0x22D4AF37) : const Color(0x331C2024),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: isSelected ? ZorvaTheme.primaryGold : ZorvaTheme.borderSubtle,
+              width: isSelected ? 1.5 : 1,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: TextStyle(
+                  color: isSelected ? ZorvaTheme.primaryGold : ZorvaTheme.textPrimary,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                ),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                subtitle,
+                style: const TextStyle(
+                  color: ZorvaTheme.textSecondary,
+                  fontSize: 11,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _customRatingOption() {
+    return Expanded(
+      child: GestureDetector(
+        onTap: () {
+          _clearError();
+          setState(() => _isCustomRating = true);
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          decoration: BoxDecoration(
+            color: _isCustomRating ? const Color(0x22D4AF37) : const Color(0x331C2024),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: _isCustomRating ? ZorvaTheme.primaryGold : ZorvaTheme.borderSubtle,
+              width: _isCustomRating ? 1.5 : 1,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '🎯 Custom',
+                style: TextStyle(
+                  color: _isCustomRating ? ZorvaTheme.primaryGold : ZorvaTheme.textPrimary,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                ),
+              ),
+              const SizedBox(height: 3),
+              const Text(
+                'Enter score',
+                style: TextStyle(
+                  color: ZorvaTheme.textSecondary,
+                  fontSize: 11,
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -507,6 +599,56 @@ class _CityOnboardingScreenState extends State<CityOnboardingScreen> {
                       prefixIcon: Icon(Icons.person_outline, color: ZorvaTheme.primaryGold),
                     ),
                   ),
+                  const SizedBox(height: 24),
+
+                  // Starting Rating Section
+                  const Text(
+                    'STARTING RATING / SKILL BASELINE',
+                    style: TextStyle(
+                      color: ZorvaTheme.primaryGold,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Your rating calibrates automatically after each match you log.',
+                    style: TextStyle(
+                      color: ZorvaTheme.textSecondary,
+                      fontSize: 12,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      _ratingOption(1000.0, '🌱 1,000 PTS', 'Casual'),
+                      const SizedBox(width: 10),
+                      _ratingOption(1200.0, '⚡ 1,200 PTS', 'Intermediate'),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      _ratingOption(1500.0, '🏆 1,500 PTS', 'Advanced / Club'),
+                      const SizedBox(width: 10),
+                      _customRatingOption(),
+                    ],
+                  ),
+                  if (_isCustomRating) ...[
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _customRatingController,
+                      keyboardType: TextInputType.number,
+                      onTap: _clearError,
+                      onChanged: (_) => _clearError(),
+                      style: const TextStyle(color: ZorvaTheme.textPrimary, fontWeight: FontWeight.bold),
+                      decoration: const InputDecoration(
+                        hintText: 'Enter rating score (e.g. 1350)',
+                        prefixIcon: Icon(Icons.stars, color: ZorvaTheme.primaryGold),
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 24),
 
                   // Home City Search Section
@@ -632,7 +774,7 @@ class _CityOnboardingScreenState extends State<CityOnboardingScreen> {
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
                                 Text(
-                                  'ENTER ZORVA',
+                                  'CLAIM SPORTS PASSPORT',
                                   style: TextStyle(
                                     fontWeight: FontWeight.bold,
                                     fontSize: 15,

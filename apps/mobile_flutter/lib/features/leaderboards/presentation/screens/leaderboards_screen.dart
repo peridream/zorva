@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../../core/theme/zorva_theme.dart';
 import '../../../../core/constants/supabase_constants.dart';
 import '../../../../core/services/api_service.dart';
+import '../../../../core/services/supabase_service.dart';
 
 class LeaderboardsScreen extends StatefulWidget {
   const LeaderboardsScreen({super.key});
@@ -45,10 +46,8 @@ class _LeaderboardsScreenState extends State<LeaderboardsScreen> {
   }
 
   Future<void> _loadCityLeaderboardData() async {
-    final supabase = Supabase.instance.client;
     try {
-      final ctxRes = await supabase.from('rating_contexts').select();
-      final allContexts = List<Map<String, dynamic>>.from(ctxRes);
+      final allContexts = await SupabaseService.getRatingContexts();
 
       _contexts = allContexts.where((c) => c['type'] != 'community').toList();
       if (_contexts.isEmpty && allContexts.isNotEmpty) {
@@ -60,13 +59,7 @@ class _LeaderboardsScreenState extends State<LeaderboardsScreen> {
       }
 
       if (_selectedContextId.isNotEmpty) {
-        final lbRes = await supabase
-            .from('player_context_ratings')
-            .select('*, profiles!user_id(id, username, full_name, city)')
-            .eq('context_id', _selectedContextId)
-            .order('rating', ascending: false);
-
-        List<Map<String, dynamic>> rawList = List<Map<String, dynamic>>.from(lbRes);
+        List<Map<String, dynamic>> rawList = await SupabaseService.getLeaderboard(_selectedContextId);
 
         final setOfCities = {'ALL'};
         for (var e in rawList) {
@@ -460,6 +453,7 @@ class _LeaderboardsScreenState extends State<LeaderboardsScreen> {
     required String subtitle,
     required int rating,
     required bool isCurrentUser,
+    bool isFounder = false,
   }) {
     Color rankBadgeColor = ZorvaTheme.cardBg;
     Color rankTextColor = ZorvaTheme.textMuted;
@@ -526,6 +520,25 @@ class _LeaderboardsScreenState extends State<LeaderboardsScreen> {
                         fontWeight: FontWeight.bold,
                       ),
                     ),
+                    if (isFounder) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: ZorvaTheme.primaryGold.withValues(alpha: 0.18),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: ZorvaTheme.primaryGold, width: 0.8),
+                        ),
+                        child: const Text(
+                          'FOUNDER 👑',
+                          style: TextStyle(
+                            color: ZorvaTheme.primaryGold,
+                            fontSize: 9,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                      ),
+                    ],
                     if (isCurrentUser) ...[
                       const SizedBox(width: 6),
                       Container(

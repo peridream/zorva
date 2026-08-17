@@ -34,18 +34,38 @@ def _generate_invite_code() -> str:
 
 
 def _is_flagship_user(user_id: str) -> bool:
-    """Check if user has an active Flagship/Founder subscription."""
+    """Check if user has active Flagship access (Founder, Paid Flagship, Active Trial, or Growth Phase)."""
+    try:
+        sett_res = supabase.table("app_settings").select("value").eq("key", "monetization_enabled").maybe_single().execute()
+        if not sett_res.data or str(sett_res.data.get("value")).lower() != "true":
+            return True # Growth Phase = Full Access
+    except Exception:
+        return True
+
     try:
         sub_res = (
-            supabase.table("premium_subscriptions")
-            .select("plan_id, status")
+            supabase.table("subscriptions")
+            .select("plan_id, status, trial_ends_at")
             .eq("user_id", user_id)
             .execute()
         )
-        sub_data = sub_res.data[0] if sub_res.data else {}
+        if not sub_res.data:
+            return False
+        sub_data = sub_res.data[0]
         plan_id = sub_data.get("plan_id", "")
         status = sub_data.get("status", "")
-        return status == "active" and plan_id in {"founder_flagship", "flagship"}
+        if sub_data.get("is_founder") or plan_id == "founder_flagship":
+            return True
+        if plan_id == "flagship" and status == "active":
+            return True
+        if plan_id == "community_trial" and status == "active":
+            trial_ends_str = sub_data.get("trial_ends_at")
+            if not trial_ends_str:
+                return True
+            import datetime
+            trial_ends_at = datetime.datetime.fromisoformat(trial_ends_str.replace("Z", "+00:00"))
+            return datetime.datetime.now(datetime.timezone.utc) < trial_ends_at
+        return False
     except Exception:
         return False
 
@@ -312,18 +332,8 @@ def get_group_insights(group_id: str, user_id: str):
     - Unlocked for Paid Flagship Users (returns is_unlocked: True + full insights).
     """
     try:
-        # 1. Check user's subscription tier
-        sub_res = (
-            supabase.table("premium_subscriptions")
-            .select("plan_id, status")
-            .eq("user_id", user_id)
-            .execute()
-        )
-        sub_data = sub_res.data[0] if sub_res.data else {}
-        plan_id = sub_data.get("plan_id", "community_trial")
-        status = sub_data.get("status", "active")
-
-        is_flagship = status == "active" and plan_id in {"founder_flagship", "flagship"}
+        # 1. Check user's subscription tier or growth phase mode
+        is_flagship = _is_flagship_user(user_id)
 
         if not is_flagship:
             return {

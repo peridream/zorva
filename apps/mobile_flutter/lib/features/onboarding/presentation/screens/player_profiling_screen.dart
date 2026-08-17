@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../../../../core/config/user_session.dart';
 import '../../../../core/theme/zorva_theme.dart';
 import '../../../dashboard/presentation/screens/home_dashboard_screen.dart';
 import 'welcome_screen.dart';
+import '../../../../core/services/api_service.dart';
 
 class PlayerProfilingScreen extends StatefulWidget {
   final String userId;
@@ -35,7 +35,6 @@ class _PlayerProfilingScreenState extends State<PlayerProfilingScreen> {
   String _rubberType = 'Smooth / Inverted';
   String _skillLevel = 'Intermediate';
   double _initialRating = 1200.0;
-  double _initialRd = 350.0;
 
   final List<Map<String, dynamic>> _questions = [
     {
@@ -133,7 +132,6 @@ class _PlayerProfilingScreenState extends State<PlayerProfilingScreen> {
       if (qIndex == 4) {
         _skillLevel = option['label'];
         _initialRating = option['rating'] ?? 1200.0;
-        _initialRd = option['rd'] ?? 350.0;
       }
     });
 
@@ -157,33 +155,21 @@ class _PlayerProfilingScreenState extends State<PlayerProfilingScreen> {
         return;
       }
       _initialRating = customVal;
-      _initialRd = 250.0;
     }
 
     setState(() => _saving = true);
-    final supabase = Supabase.instance.client;
 
     try {
-      // Save calibrated rating to player_context_ratings
+      // Save profiling attributes and calibrated rating via REST API
       try {
-        final contextRes = await supabase
-            .from('rating_contexts')
-            .select('id')
-            .eq('type', 'community')
-            .maybeSingle();
-        final contextId = contextRes?['id'];
-        if (contextId != null) {
-          await supabase.from('player_context_ratings').upsert({
-            'user_id': widget.userId,
-            'context_id': contextId,
-            'rating': _initialRating,
-            'rd': _initialRd,
-            'volatility': 0.06,
-            'wins': 0,
-            'losses': 0,
-            'matches_played': 0,
-          }, onConflict: 'user_id,context_id');
-        }
+        await ApiService.updateUserProfile(widget.userId, {
+          'play_style': _playstyle,
+          'playing_hand': _playingHand,
+          'grip_style': _gripStyle,
+          'rubber_type': _rubberType,
+          'skill_level': _skillLevel,
+          'self_rating': _initialRating,
+        });
       } catch (rErr) {
         debugPrint('Calibrated rating save note: $rErr');
       }

@@ -182,4 +182,4 @@ def apply_match_result(
     return new_a, new_b
 
 
-DEFAULT_RATING = RatingState(rating=1500.0, rd=350.0, volatility=0.06)
+DEFAULT_RATING = RatingState(rating=1200.0, rd=350.0, volatility=0.06)

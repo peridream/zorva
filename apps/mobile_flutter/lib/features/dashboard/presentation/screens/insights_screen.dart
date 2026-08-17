@@ -42,10 +42,9 @@ class _InsightsScreenState extends State<InsightsScreen> {
     setState(() => _loading = true);
     final userId = _effectiveUserId;
 
-    // Try backend API server first
-    final serverData = await ApiService.getPlayerInsights(userId);
-    if (serverData != null) {
-      if (mounted) {
+    try {
+      final serverData = await ApiService.getPlayerInsights(userId);
+      if (serverData != null && mounted) {
         setState(() {
           _currentRating = (serverData['current_rating'] as num? ?? 1500).round();
           _peakRating = (serverData['peak_rating'] as num? ?? 1500).round();
@@ -53,179 +52,18 @@ class _InsightsScreenState extends State<InsightsScreen> {
           _bestWinStreak = (serverData['best_win_streak'] as num? ?? 0).toInt();
           _formGuide = List<String>.from(serverData['form_guide'] ?? []);
           _ratingHistoryPoints = List<double>.from((serverData['trajectory_points'] as List? ?? []).map((e) => (e as num).toDouble()));
-          _loading = false;
+          if (serverData['favorite_opponent'] != null) {
+            _favoriteOpponent = serverData['favorite_opponent'];
+            _favOpponentWins = (serverData['fav_opponent_wins'] as num? ?? 0).toInt();
+          }
+          if (serverData['toughest_opponent'] != null) {
+            _toughestOpponent = serverData['toughest_opponent'];
+            _toughestOpponentLosses = (serverData['toughest_opponent_losses'] as num? ?? 0).toInt();
+          }
         });
       }
-      return;
-    }
-
-    final supabase = Supabase.instance.client;
-
-    try {
-      // 1. Fetch Ratings for peak & current
-      String? activeContextId;
-      final ratingsRes = await supabase
-          .from('player_context_ratings')
-          .select('rating, context_id, rating_contexts(id, name, type)')
-          .eq('user_id', userId);
-
-      if (ratingsRes.isNotEmpty) {
-        final List<Map<String, dynamic>> rList = List<Map<String, dynamic>>.from(ratingsRes);
-        
-        // Always prioritize Flagship rating card if user has Flagship membership
-        final chosenCard = rList.firstWhere((r) {
-          final ctx = r['rating_contexts'];
-          if (ctx is Map && ctx['type'] == 'flagship') return true;
-          if (ctx is List && ctx.isNotEmpty && ctx.first['type'] == 'flagship') return true;
-          return false;
-        }, orElse: () => rList.first);
-
-        final num ratingNum = chosenCard['rating'] as num? ?? 1500;
-        _currentRating = ratingNum.round();
-        _peakRating = _currentRating;
-        activeContextId = chosenCard['context_id'] as String?;
-      }
-
-      // 2. Fetch all verified matches for analytics
-      final matchesRes = await supabase
-          .from('matches')
-          .select('*')
-          .or('creator_id.eq.$userId,opponent_id.eq.$userId')
-          .eq('status', 'confirmed')
-          .order('logged_at', ascending: false);
-
-      final matches = List<Map<String, dynamic>>.from(matchesRes);
-
-      // Form Guide (Last 5)
-      final List<String> form = [];
-      int currentStreak = 0;
-      bool streakActive = true;
-      int maxStreak = 0;
-      int tempStreak = 0;
-
-      final Map<String, int> oppWins = {};
-      final Map<String, int> oppLosses = {};
-
-      for (var m in matches) {
-        final isWin = m['winner_id'] == userId;
-        final oppId = m['creator_id'] == userId ? m['opponent_id'] : m['creator_id'];
-
-        if (form.length < 5) {
-          form.add(isWin ? 'W' : 'L');
-        }
-
-        if (isWin) {
-          if (streakActive) currentStreak++;
-          tempStreak++;
-          if (tempStreak > maxStreak) maxStreak = tempStreak;
-          oppWins[oppId] = (oppWins[oppId] ?? 0) + 1;
-        } else {
-          streakActive = false;
-          tempStreak = 0;
-          oppLosses[oppId] = (oppLosses[oppId] ?? 0) + 1;
-        }
-      }
-
-      _winStreak = currentStreak;
-      _bestWinStreak = maxStreak;
-      _formGuide = form.reversed.toList();
-
-      // Find Favorite Opponent (Most Wins)
-      if (oppWins.isNotEmpty) {
-        final favId = oppWins.entries.reduce((a, b) => a.value > b.value ? a : b).key;
-        _favOpponentWins = oppWins[favId]!;
-
-        final favProfile = await supabase
-            .from('profiles')
-            .select('full_name, username')
-            .eq('id', favId)
-            .maybeSingle();
-
-        final rawName = favProfile?['full_name'] ?? favProfile?['username'];
-        _favoriteOpponent = (rawName != null && rawName.toString().trim().isNotEmpty)
-            ? rawName.toString().trim()
-            : 'Player';
-      }
-
-      // Find Toughest Opponent (Most Losses)
-      if (oppLosses.isNotEmpty) {
-        final toughId = oppLosses.entries.reduce((a, b) => a.value > b.value ? a : b).key;
-        _toughestOpponentLosses = oppLosses[toughId]!;
-
-        final toughProfile = await supabase
-            .from('profiles')
-            .select('full_name, username')
-            .eq('id', toughId)
-            .maybeSingle();
-
-        final rawName = toughProfile?['full_name'] ?? toughProfile?['username'];
-        _toughestOpponent = (rawName != null && rawName.toString().trim().isNotEmpty)
-            ? rawName.toString().trim()
-            : 'Player';
-      }
-
-      // 3. Exact Glicko-2 Trajectory from match_context_links
-      final List<double> points = [];
-      try {
-        final userMatches = await supabase
-            .from('matches')
-            .select('id, creator_id, opponent_id')
-            .or('creator_id.eq.$userId,opponent_id.eq.$userId')
-            .eq('status', 'verified')
-            .order('logged_at', ascending: true);
-
-        final matchesList = List<Map<String, dynamic>>.from(userMatches);
-        if (matchesList.isNotEmpty) {
-          final matchIds = matchesList.map((m) => m['id'] as String).toList();
-          var linksQuery = supabase
-              .from('match_context_links')
-              .select('*')
-              .inFilter('match_id', matchIds);
-
-          if (activeContextId != null) {
-            linksQuery = linksQuery.eq('context_id', activeContextId);
-          }
-
-          final linksRes = await linksQuery.order('created_at', ascending: true);
-          final links = List<Map<String, dynamic>>.from(linksRes);
-
-          final Map<String, Map<String, dynamic>> matchMap = {
-            for (var m in matchesList) m['id'] as String: m
-          };
-
-          for (var l in links) {
-            final mId = l['match_id'] as String;
-            final m = matchMap[mId];
-            final isCreator = m?['creator_id'] == userId;
-
-            if (points.isEmpty) {
-              // Point 0: True Glicko-2 rating BEFORE Match 1
-              final rBefore = isCreator
-                  ? (l['p1_rating_before'] as num?)?.toDouble()
-                  : (l['p2_rating_before'] as num?)?.toDouble();
-              if (rBefore != null) points.add(rBefore);
-            }
-
-            // Point N: True Glicko-2 rating AFTER Match N
-            final rAfter = isCreator
-                ? (l['p1_rating_after'] as num?)?.toDouble()
-                : (l['p2_rating_after'] as num?)?.toDouble();
-            if (rAfter != null) points.add(rAfter);
-          }
-        }
-      } catch (hErr) {
-        debugPrint('Trajectory query note: $hErr');
-      }
-
-      if (points.isEmpty) {
-        points.add(_currentRating.toDouble());
-      }
-
-      _ratingHistoryPoints = points;
-      _peakRating = _ratingHistoryPoints.reduce((a, b) => a > b ? a : b).round();
-
     } catch (e) {
-      debugPrint('Error loading insights: $e');
+      debugPrint('Insights load error: $e');
     } finally {
       if (mounted) setState(() => _loading = false);
     }

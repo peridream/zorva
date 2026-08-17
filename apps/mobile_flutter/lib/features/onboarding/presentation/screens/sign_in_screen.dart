@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../../core/theme/zorva_theme.dart';
 import '../../../dashboard/presentation/screens/home_dashboard_screen.dart';
 import 'city_onboarding_screen.dart';
+import '../../../../core/services/supabase_service.dart';
 
 class SignInScreen extends StatefulWidget {
   const SignInScreen({super.key});
@@ -62,11 +63,8 @@ class _SignInScreenState extends State<SignInScreen> {
     final supabase = Supabase.instance.client;
 
     try {
-      final profile = await supabase
-          .from('profiles')
-          .select('full_name')
-          .eq('email', email)
-          .maybeSingle();
+      final profiles = await SupabaseService.lookupUser(email);
+      final profile = profiles.isNotEmpty ? profiles.first : null;
 
       if (profile != null && (profile['full_name'] as String? ?? '').trim().isNotEmpty) {
         _isExistingUser = true;
@@ -172,13 +170,9 @@ class _SignInScreenState extends State<SignInScreen> {
 
     if (!mounted) return;
 
-    // 🔍 Smart Routing: Check if profile is COMPLETE (name + city required)
+    // 🔍 Smart Routing: Check if profile is COMPLETE via SupabaseService
     try {
-      final profileRes = await supabase
-          .from('profiles')
-          .select('id, full_name, city')
-          .eq('id', userId)
-          .maybeSingle();
+      final profileRes = await SupabaseService.getProfile(userId);
 
       if (!mounted) return;
 
